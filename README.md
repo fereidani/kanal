@@ -17,6 +17,8 @@ Go: `go version go1.18.3 linux/amd64`
 
 July 14 2022
 
+[Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
+
 ![Benchmark bounded channel with size 0](https://i.imgur.com/vEBirUw.png)
 ![Benchmark bounded channel with size 1](https://i.imgur.com/iDETIAK.png)
 ![Benchmark bounded channel with size n](https://i.imgur.com/qdjXzyh.png)
