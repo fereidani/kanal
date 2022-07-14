@@ -175,7 +175,7 @@ impl<T> AsyncSender<T> {
         if internal.send_count == 0 {
             return Err(Error::Closed);
         }
-        if let Some(first) = internal.recv_wait.pop_front() {
+        if let Some(first) = internal.next_recv() {
             drop(internal);
             unsafe { first.send(data) }
             Ok(())
