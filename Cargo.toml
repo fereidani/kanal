@@ -6,7 +6,7 @@ authors = ["Khashayar Fereidani"]
 description = "Fastest sync and async channel that Rust deserves"
 repository = "https://github.com/fereidani/kanal"
 keywords = ["channel", "mpsc", "mpmc", "csp", "async"]
-categories = ["concurrency", "data-structures"]
+categories = ["concurrency", "data-structures","asynchronous"]
 license = "MIT"
 readme = "README.md"
 
