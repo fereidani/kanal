@@ -124,12 +124,11 @@ impl<T> Sender<T> {
         if internal.send_count == 0 {
             return Err(Error::Closed);
         }
-        let qlen = internal.queue.len();
         if let Some(first) = internal.next_recv() {
             drop(internal);
             unsafe { first.send(data) }
             Ok(())
-        } else if qlen < internal.capacity {
+        } else if internal.queue.len() < internal.capacity {
             internal.queue.push_back(data);
             Ok(())
         } else {
@@ -176,12 +175,11 @@ impl<T> AsyncSender<T> {
         if internal.send_count == 0 {
             return Err(Error::Closed);
         }
-        let qlen = internal.queue.len();
         if let Some(first) = internal.recv_wait.pop_front() {
             drop(internal);
             unsafe { first.send(data) }
             Ok(())
-        } else if qlen < internal.capacity {
+        } else if internal.queue.len() < internal.capacity {
             internal.queue.push_back(data);
             Ok(())
         } else {
