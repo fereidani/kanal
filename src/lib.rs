@@ -256,10 +256,6 @@ impl<T> Receiver<T> {
             internal.push_recv(sig.as_signal());
             drop(internal);
             if !sig.wait() {
-                // receiving data was not successful so calling drop on uninited is undefined behavior
-                if std::mem::needs_drop::<T>() {
-                    std::mem::forget(ret);
-                }
                 return Err(Error::ReceiveClosed);
             }
             Ok(unsafe { ret.assume_init() })
@@ -323,10 +319,6 @@ impl<T> AsyncReceiver<T> {
             let sig = sig.deref();
             let sync_wait = sig.wait_sync();
             if sync_wait >= 1 && (sync_wait == 2 || sig.await != 0) {
-                // receiving data was not successful so calling drop on uninited is undefined behavior
-                if std::mem::needs_drop::<T>() {
-                    std::mem::forget(ret);
-                }
                 return Err(Error::ReceiveClosed);
             }
             Ok(unsafe { ret.assume_init() })
