@@ -57,6 +57,17 @@ impl<T> Future for &AsyncSignal<T> {
     }
 }
 
+/// read the pointer value for types with size bigger than zero, in case of zero sized types returns std::mem::zeroed
+#[inline(always)]
+unsafe fn read_ptr<T>(ptr: *const T) -> T {
+    if std::mem::size_of::<T>() > 0 {
+        return std::ptr::read(ptr);
+    } else {
+        // for zero types
+        return std::mem::zeroed();
+    }
+}
+
 impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub fn new(ptr: AtomicPtr<T>) -> Arc<Self> {
@@ -85,7 +96,9 @@ impl<T> AsyncSignal<T> {
     // writes data to pointer, shall not be called more than once
     #[inline(always)]
     pub unsafe fn send(&self, d: T) {
-        std::ptr::write(self.ptr.load(Ordering::SeqCst), d);
+        if std::mem::size_of::<T>() > 0 {
+            std::ptr::write(self.ptr.load(Ordering::SeqCst), d);
+        }
         self.state.store(0);
         self.wake();
     }
@@ -103,7 +116,7 @@ impl<T> AsyncSignal<T> {
     // read data from pointer, shall not be called more than once
     #[inline(always)]
     pub unsafe fn recv(&self) -> T {
-        let d = std::ptr::read(self.ptr.load(Ordering::SeqCst));
+        let d = read_ptr(self.ptr.load(Ordering::SeqCst));
         self.state.store(0);
         self.wake();
         d
@@ -154,7 +167,7 @@ impl<T> SyncSignal<T> {
     // read data from pointer, shall not be called more than once
     #[inline(always)]
     pub unsafe fn recv(&self) -> T {
-        let d = std::ptr::read(self.ptr);
+        let d = read_ptr(self.ptr);
         self.s.unlock();
         d
     }
