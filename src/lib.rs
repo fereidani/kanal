@@ -251,8 +251,8 @@ impl<T> Receiver<T> {
                 return Err(Error::SendClosed);
             }
             // no active waiter so push to queue
-            let mut ret: T = unsafe { MaybeUninit::<T>::uninit().assume_init() };
-            let mut sig = SyncSignal::new(&mut ret as *mut T);
+            let mut ret = MaybeUninit::<T>::uninit();
+            let mut sig = SyncSignal::new(ret.as_mut_ptr() as *mut T);
             internal.push_recv(sig.as_signal());
             drop(internal);
             if !sig.wait() {
@@ -262,7 +262,7 @@ impl<T> Receiver<T> {
                 }
                 return Err(Error::ReceiveClosed);
             }
-            Ok(ret)
+            Ok(unsafe { ret.assume_init() })
         }
         // if queue is not empty send data
     }
@@ -315,8 +315,8 @@ impl<T> AsyncReceiver<T> {
                 return Err(Error::SendClosed);
             }
             // no active waiter so push to queue
-            let mut ret: T = unsafe { MaybeUninit::<T>::uninit().assume_init() };
-            let sig = AsyncSignal::new(AtomicPtr::new(&mut ret));
+            let mut ret = MaybeUninit::<T>::uninit();
+            let sig = AsyncSignal::new(AtomicPtr::new(ret.as_mut_ptr()));
 
             internal.push_recv(sig.clone().as_signal());
             drop(internal);
@@ -329,7 +329,7 @@ impl<T> AsyncReceiver<T> {
                 }
                 return Err(Error::ReceiveClosed);
             }
-            Ok(ret)
+            Ok(unsafe { ret.assume_init() })
         }
     }
     /// Returns sync cloned version of receiver
