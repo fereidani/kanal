@@ -14,6 +14,6 @@ readme = "README.md"
 lock_api = "0.4.7"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features =["rt-multi-thread", "test-util", "macros"] }
 crossbeam = "0.8"
 
