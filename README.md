@@ -1,6 +1,14 @@
 # Kanal
 **Fastest sync and async channel that Rust deserves!**
 
+[![Crates.io][crates-badge]][crates-url]
+[![MIT licensed][mit-badge]][mit-url]
+
+[crates-badge]: https://img.shields.io/crates/v/kanal.svg
+[crates-url]: https://crates.io/crates/kanal
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: https://github.com/fereidani/kanal/blob/master/LICENSE
+
 ## What is Kanal
 Kanal is a Rust library to help programmers design effective programs in CSP model via providing featureful multi-producer multi-consumer channels.
 This library focuses on bringing both sync and async API together to unify message passing between sync and async parts of Rust code in a performant manner.
