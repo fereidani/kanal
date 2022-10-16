@@ -18,14 +18,18 @@ pub(crate) mod state;
 
 use internal::{acquire_internal, ChannelInternal, Internal};
 
+#[cfg(feature = "async")]
+use std::mem::ManuallyDrop;
 use std::{
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::MaybeUninit,
     time::{Duration, SystemTime},
 };
 
 use std::fmt;
 
-use signal::{AsyncSignal, SyncSignal};
+#[cfg(feature = "async")]
+use signal::AsyncSignal;
+use signal::SyncSignal;
 
 /*
 use crate::mutex::MutexGuard;

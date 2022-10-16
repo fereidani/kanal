@@ -55,6 +55,7 @@ impl State {
         self.v.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn wait_indefinitely(&self) -> u8 {
         let v = self.v.load(Ordering::SeqCst);

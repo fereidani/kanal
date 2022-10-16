@@ -1,25 +1,16 @@
-#[allow(dead_code)]
+#![allow(dead_code)]
+const MESSAGES: usize = 1000000;
+const THREADS: usize = 8;
+
 #[cfg(test)]
 mod tests {
-    use crate::{
-        bounded, bounded_async, unbounded, unbounded_async, AsyncReceiver, AsyncSender, Receiver,
-        Sender,
-    };
-
-    const MESSAGES: usize = 1000000;
-    const THREADS: usize = 8;
+    use crate::kanal_tests::{MESSAGES, THREADS};
+    use crate::{bounded, unbounded, Receiver, Sender};
 
     fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
         match cap {
             None => unbounded(),
             Some(cap) => bounded(cap),
-        }
-    }
-
-    fn new_async<T>(cap: Option<usize>) -> (AsyncSender<T>, AsyncReceiver<T>) {
-        match cap {
-            None => unbounded_async(),
-            Some(cap) => bounded_async(cap),
         }
     }
 
@@ -150,6 +141,19 @@ mod tests {
     #[test]
     fn mpmc_u() {
         mpmc(None);
+    }
+}
+#[cfg(feature = "async")]
+#[cfg(test)]
+mod async_tests {
+    use crate::kanal_tests::{MESSAGES, THREADS};
+    use crate::{bounded_async, unbounded_async, AsyncReceiver, AsyncSender};
+
+    fn new_async<T>(cap: Option<usize>) -> (AsyncSender<T>, AsyncReceiver<T>) {
+        match cap {
+            None => unbounded_async(),
+            Some(cap) => bounded_async(cap),
+        }
     }
 
     async fn async_mpmc(cap: Option<usize>) {
