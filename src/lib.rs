@@ -89,6 +89,7 @@ pub struct Sender<T> {
 }
 
 // Async sender of channel for type T, it can generate sync version via clone_sync
+#[cfg(feature = "async")]
 pub struct AsyncSender<T> {
     internal: Internal<T>,
 }
@@ -102,6 +103,7 @@ impl<T> Drop for Sender<T> {
     }
 }
 
+#[cfg(feature = "async")]
 impl<T> Drop for AsyncSender<T> {
     fn drop(&mut self) {
         let mut internal = acquire_internal(&self.internal);
@@ -123,6 +125,7 @@ impl<T> Clone for Sender<T> {
     }
 }
 
+#[cfg(feature = "async")]
 impl<T> Clone for AsyncSender<T> {
     fn clone(&self) -> Self {
         let mut internal = acquire_internal(&self.internal);
@@ -325,6 +328,7 @@ impl<T> Sender<T> {
     }
 
     /// Clones Sender as async version of it and returns it
+    #[cfg(feature = "async")]
     pub fn clone_async(&self) -> AsyncSender<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count > 0 {
