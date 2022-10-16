@@ -420,12 +420,12 @@ impl<T> Receiver<T> {
             return Err(Error::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
-            if let Some(mut p) = internal.next_send() {
+            if let Some(p) = internal.next_send() {
                 // if there is a sender take its data and push it in queue
                 unsafe { internal.queue.push_back(p.recv()) }
             }
             Ok(v)
-        } else if let Some(mut p) = internal.next_send() {
+        } else if let Some(p) = internal.next_send() {
             drop(internal);
             unsafe { Ok(p.recv()) }
         } else {
@@ -453,12 +453,12 @@ impl<T> Receiver<T> {
             return Err(ErrorTimeout::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
-            if let Some(mut p) = internal.next_send() {
+            if let Some(p) = internal.next_send() {
                 // if there is a sender take its data and push it in queue
                 unsafe { internal.queue.push_back(p.recv()) }
             }
             Ok(v)
-        } else if let Some(mut p) = internal.next_send() {
+        } else if let Some(p) = internal.next_send() {
             drop(internal);
             unsafe { Ok(p.recv()) }
         } else {
@@ -502,12 +502,12 @@ impl<T> Receiver<T> {
             return Err(Error::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
-            if let Some(mut p) = internal.next_send() {
+            if let Some(p) = internal.next_send() {
                 // if there is a sender take its data and push it in queue
                 unsafe { internal.queue.push_back(p.recv()) }
             }
             return Ok(Some(v));
-        } else if let Some(mut p) = internal.next_send() {
+        } else if let Some(p) = internal.next_send() {
             return unsafe { Ok(Some(p.recv())) };
         }
         Ok(None)
@@ -564,12 +564,12 @@ impl<T> AsyncReceiver<T> {
             return Err(Error::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
-            if let Some(mut p) = internal.next_send() {
+            if let Some(p) = internal.next_send() {
                 // if there is a sender take its data and push it in queue
                 unsafe { internal.queue.push_back(p.recv()) }
             }
             return Ok(Some(v));
-        } else if let Some(mut p) = internal.next_send() {
+        } else if let Some(p) = internal.next_send() {
             return unsafe { Ok(Some(p.recv())) };
         }
         Ok(None)
