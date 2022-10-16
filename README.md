@@ -18,4 +18,4 @@ Date: Oct 16, 2022
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
-![Benchmarks](https://i.imgur.com/WgrFRtK.png)
+![Benchmarks](https://i.imgur.com/gHfk5fy.png)
