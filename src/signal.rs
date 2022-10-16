@@ -103,7 +103,7 @@ impl<T> AsyncSignal<T> {
     // convert async signal to common signal that works with channel internal
     #[inline(always)]
     pub fn as_signal(&mut self) -> Signal<T> {
-        Signal::Async(self as *mut Self)
+        Signal::Async(self as *const Self)
     }
 
     // signals waiter that its request is processed
@@ -113,7 +113,7 @@ impl<T> AsyncSignal<T> {
     }
 
     #[inline(always)]
-    pub unsafe fn send(&mut self, d: T) {
+    pub unsafe fn send(&self, d: T) {
         if std::mem::size_of::<T>() > 0 {
             *self.data = ManuallyDrop::new(d);
         }
@@ -122,7 +122,7 @@ impl<T> AsyncSignal<T> {
     }
 
     #[inline(always)]
-    pub unsafe fn recv(&mut self) -> T {
+    pub unsafe fn recv(&self) -> T {
         if std::mem::size_of::<T>() > 0 {
             let r = ManuallyDrop::take(&mut *self.data);
             self.state.store(UNLOCKED);
@@ -180,8 +180,8 @@ impl<T> SyncSignal<T> {
     }
 
     // convert sync signal to common signal that works with channel internal
-    pub fn as_signal(&mut self) -> Signal<T> {
-        Signal::Sync(self as *mut Self)
+    pub fn as_signal(&self) -> Signal<T> {
+        Signal::Sync(self as *const Self)
     }
 
     // writes data to pointer, shall not be called more than once
@@ -259,8 +259,8 @@ impl<T> SyncSignal<T> {
 
 #[derive(Clone, Copy)]
 pub enum Signal<T> {
-    Sync(*mut SyncSignal<T>),
-    Async(*mut AsyncSignal<T>),
+    Sync(*const SyncSignal<T>),
+    Async(*const AsyncSignal<T>),
 }
 
 unsafe impl<T> Sync for Signal<T> {}
