@@ -188,7 +188,7 @@ impl<T> Sender<T> {
             }
             // send directly to wait list
 
-            let mut sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
+            let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
             internal.push_send(sig.as_signal());
             drop(internal);
             if !sig.wait() {
@@ -223,7 +223,7 @@ impl<T> Sender<T> {
             }
             // send directly to wait list
 
-            let mut sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
+            let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
             let cancelable_sig = sig.as_signal();
             internal.push_send(cancelable_sig);
             drop(internal);
@@ -274,7 +274,7 @@ impl<T> Sender<T> {
             }
             // send directly to wait list
             let mut d = data.take().unwrap();
-            let mut sig = SyncSignal::new(&mut d as *mut T, std::thread::current());
+            let sig = SyncSignal::new(&mut d as *mut T, std::thread::current());
             internal.push_send(sig.as_signal());
             drop(internal);
             if !sig.wait_timeout(deadline) {
@@ -434,7 +434,7 @@ impl<T> Receiver<T> {
             }
             // no active waiter so push to queue
             let mut ret = MaybeUninit::<T>::uninit();
-            let mut sig = SyncSignal::new(ret.as_mut_ptr(), std::thread::current());
+            let sig = SyncSignal::new(ret.as_mut_ptr(), std::thread::current());
             internal.push_recv(sig.as_signal());
             drop(internal);
 
@@ -470,7 +470,7 @@ impl<T> Receiver<T> {
             }
             // no active waiter so push to queue
             let mut ret = MaybeUninit::<T>::uninit();
-            let mut sig = SyncSignal::new(ret.as_mut_ptr() as *mut T, std::thread::current());
+            let sig = SyncSignal::new(ret.as_mut_ptr() as *mut T, std::thread::current());
             internal.push_recv(sig.as_signal());
             drop(internal);
             if !sig.wait_timeout(deadline) {

@@ -185,34 +185,47 @@ impl<T> SyncSignal<T> {
     }
 
     // writes data to pointer, shall not be called more than once
+    // has to be done through a pointer because by the end of this scope
+    // the object might have been destroyes by the owning receiver
     #[inline(always)]
-    pub unsafe fn send(&self, d: T) {
+    pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
-            std::ptr::write(self.ptr, d);
+            std::ptr::write((*this).ptr, d);
         }
-        if !self.state.unlock() {
-            self.state.force_unlock();
-            self.thread.unpark();
+        if !(*this).state.unlock() {
+            // Clone the thread because this.thread might be destroyed
+            // sometime during unpark when the other thread wakes up
+            let thread = (*this).thread.clone();
+            (*this).state.force_unlock();
+            thread.unpark();
         }
     }
 
     // read data from pointer, shall not be called more than once
+    // has to be done through a pointer because by the end of this scope
+    // the object might have been destroyed by the owning receiver
     #[inline(always)]
-    pub unsafe fn recv(&self) -> T {
-        let d = read_ptr(self.ptr);
-        if !self.state.unlock() {
-            self.state.force_unlock();
-            self.thread.unpark();
+    pub unsafe fn recv(this: *const Self) -> T {
+        let d = read_ptr((*this).ptr);
+        if !(*this).state.unlock() {
+            // Same as send
+            let thread = (*this).thread.clone();
+            (*this).state.force_unlock();
+            thread.unpark();
         }
         d
     }
 
     // terminates operation and notifies the waiter , shall not be called more than once
+    // has to be done through a pointer because by the end of this scope
+    // the object might have been destroyed by the owner
     #[inline(always)]
-    pub unsafe fn terminate(&self) {
-        if !self.state.terminate() {
-            self.state.force_terminate();
-            self.thread.unpark();
+    pub unsafe fn terminate(this: *const Self) {
+        if !(*this).state.terminate() {
+            // Same as send and recv
+            let thread = (*this).thread.clone();
+            (*this).state.force_terminate();
+            thread.unpark();
         }
     }
 
@@ -284,21 +297,21 @@ impl<T> Signal<T> {
 
     pub unsafe fn send(&self, d: T) {
         match self {
-            Signal::Sync(sig) => (**sig).send(d),
+            Signal::Sync(sig) => SyncSignal::send(*sig, d),
             Signal::Async(sig) => (**sig).send(d),
         }
     }
 
     pub unsafe fn recv(&mut self) -> T {
         match self {
-            Signal::Sync(sig) => (**sig).recv(),
+            Signal::Sync(sig) => SyncSignal::recv(*sig),
             Signal::Async(sig) => (**sig).recv(),
         }
     }
 
     pub unsafe fn terminate(&self) {
         match self {
-            Signal::Sync(sig) => (**sig).terminate(),
+            Signal::Sync(sig) => SyncSignal::terminate(*sig),
             Signal::Async(sig) => (**sig).terminate(),
         }
     }
