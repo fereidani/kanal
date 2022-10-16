@@ -295,24 +295,24 @@ impl<T> Signal<T> {
         }
     }
 
-    pub unsafe fn send(&self, d: T) {
+    pub unsafe fn send(self, d: T) {
         match self {
-            Signal::Sync(sig) => SyncSignal::send(*sig, d),
-            Signal::Async(sig) => (**sig).send(d),
+            Signal::Sync(sig) => SyncSignal::send(sig, d),
+            Signal::Async(sig) => (&*sig).send(d),
         }
     }
 
-    pub unsafe fn recv(&mut self) -> T {
+    pub unsafe fn recv(self) -> T {
         match self {
-            Signal::Sync(sig) => SyncSignal::recv(*sig),
-            Signal::Async(sig) => (**sig).recv(),
+            Signal::Sync(sig) => SyncSignal::recv(sig),
+            Signal::Async(sig) => (&*sig).recv(),
         }
     }
 
     pub unsafe fn terminate(&self) {
         match self {
             Signal::Sync(sig) => SyncSignal::terminate(*sig),
-            Signal::Async(sig) => (**sig).terminate(),
+            Signal::Async(sig) => (&**sig).terminate(),
         }
     }
 }
