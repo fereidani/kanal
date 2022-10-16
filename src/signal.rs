@@ -193,10 +193,11 @@ impl<T> SyncSignal<T> {
             std::ptr::write((*this).ptr, d);
         }
         if !(*this).state.unlock() {
-            (*this).state.force_unlock();
             // Clone the thread because this.thread might be destroyed
             // sometime during unpark when the other thread wakes up
-            (*this).thread.clone().unpark();
+            let thread = (*this).thread.clone();
+            (*this).state.force_unlock();
+            thread.unpark();
         }
     }
 
@@ -207,9 +208,10 @@ impl<T> SyncSignal<T> {
     pub unsafe fn recv(this: *const Self) -> T {
         let d = read_ptr((*this).ptr);
         if !(*this).state.unlock() {
-            (*this).state.force_unlock();
             // Same as send
-            (*this).thread.clone().unpark();
+            let thread = (*this).thread.clone();
+            (*this).state.force_unlock();
+            thread.unpark();
         }
         d
     }
@@ -220,9 +222,10 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
         if !(*this).state.terminate() {
-            (*this).state.force_terminate();
             // Same as send and recv
-            (*this).thread.clone().unpark();
+            let thread = (*this).thread.clone();
+            (*this).state.force_terminate();
+            thread.unpark();
         }
     }
 
