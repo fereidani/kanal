@@ -1,23 +1,37 @@
 use std::cell::Cell;
 
-use std::hint::spin_loop;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
-
 use std::future::Future;
+use std::mem::ManuallyDrop;
+use std::ptr::null_mut;
+
 use std::task::Waker;
+use std::thread::Thread;
 use std::time::{Duration, SystemTime};
 
 use crate::mutex::Mutex;
-use crate::state::State;
+use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 
+#[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
     // async_lock: AtomicU8,
-    ptr: AtomicPtr<T>,
+    data: *mut ManuallyDrop<T>,
     state: State,
     waker: WakerStore,
 }
+
+#[cfg(feature = "async")]
+impl<T> Default for AsyncSignal<T> {
+    fn default() -> Self {
+        Self {
+            data: null_mut(),
+            state: Default::default(),
+            waker: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+unsafe impl<T> Send for AsyncSignal<T> {}
 
 #[derive(Default)]
 pub struct WakerStore(Mutex<Cell<Option<Waker>>>);
@@ -35,21 +49,21 @@ impl WakerStore {
     }
 }
 
-impl<T> Future for &AsyncSignal<T> {
+impl<T> Future for AsyncSignal<T> {
     type Output = u8;
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let v = self.state.value();
-        if v != 1 {
+        if v < LOCKED {
             return std::task::Poll::Ready(v);
         }
         {
             self.waker.register(cx.waker())
         }
         let v = self.state.value();
-        if v == 1 {
+        if v >= LOCKED {
             std::task::Poll::Pending
         } else {
             std::task::Poll::Ready(v)
@@ -61,30 +75,35 @@ impl<T> Future for &AsyncSignal<T> {
 #[inline(always)]
 unsafe fn read_ptr<T>(ptr: *const T) -> T {
     if std::mem::size_of::<T>() > 0 {
-        return std::ptr::read(ptr);
+        std::ptr::read(ptr)
     } else {
         // for zero types
-        return std::mem::zeroed();
+        std::mem::zeroed()
     }
 }
 
 impl<T> AsyncSignal<T> {
+    // signal to send data to a writer
     #[inline(always)]
-    pub fn new(ptr: AtomicPtr<T>) -> Arc<Self> {
+    pub fn new() -> Self {
         let e = Self {
             state: Default::default(),
-            ptr,
+            data: null_mut(),
             waker: Default::default(),
         };
+        e.state.store(LOCKED);
+        e
+    }
 
-        e.state.store(1);
-
-        e.into()
+    #[inline(always)]
+    pub fn set_ptr(&mut self, data: &mut ManuallyDrop<T>) {
+        self.data = data as *mut ManuallyDrop<T>;
     }
 
     // convert async signal to common signal that works with channel internal
-    pub fn as_signal(self: Arc<Self>) -> Signal<T> {
-        Signal::Async(self)
+    #[inline(always)]
+    pub fn as_signal(&mut self) -> Signal<T> {
+        Signal::Async(self as *mut Self)
     }
 
     // signals waiter that its request is processed
@@ -93,60 +112,70 @@ impl<T> AsyncSignal<T> {
         self.waker.wake();
     }
 
-    // writes data to pointer, shall not be called more than once
     #[inline(always)]
-    pub unsafe fn send(&self, d: T) {
+    pub unsafe fn send(&mut self, d: T) {
         if std::mem::size_of::<T>() > 0 {
-            std::ptr::write(self.ptr.load(Ordering::SeqCst), d);
+            *self.data = ManuallyDrop::new(d);
         }
-        self.state.store(0);
+        self.state.store(UNLOCKED);
         self.wake();
     }
 
-    // wait for short time for lock and returns true if lock is unlocked
     #[inline(always)]
-    pub fn wait_sync(&self) -> u8 {
-        let until = SystemTime::now() + Duration::from_micros(1);
-        while self.state.is_locked() && SystemTime::now() < until {
-            spin_loop()
+    pub unsafe fn recv(&mut self) -> T {
+        if std::mem::size_of::<T>() > 0 {
+            let r = ManuallyDrop::take(&mut *self.data);
+            self.state.store(UNLOCKED);
+            self.wake();
+            r
+        } else {
+            self.state.store(UNLOCKED);
+            self.wake();
+            std::mem::zeroed()
         }
-        self.state.value()
-    }
-
-    // read data from pointer, shall not be called more than once
-    #[inline(always)]
-    pub unsafe fn recv(&self) -> T {
-        let d = read_ptr(self.ptr.load(Ordering::SeqCst));
-        self.state.store(0);
-        self.wake();
-        d
     }
 
     // terminates operation and notifies the waiter , shall not be called more than once
     #[inline(always)]
     pub unsafe fn terminate(&self) {
-        self.state.store(2);
+        self.state.store(TERMINATED);
         self.wake();
+    }
+
+    // wait for short time for lock and returns true if lock is unlocked
+    #[inline(always)]
+    pub fn wait_sync_short(&self) -> u8 {
+        let until = SystemTime::now() + Duration::from_nanos(1e6 as u64);
+        self.state.wait_unlock_until(until)
+    }
+
+    // waits for signal and returns true if send/recv operation was successful
+    #[inline(always)]
+    pub fn wait_indefinitely(&self) -> u8 {
+        self.state.wait_indefinitely()
     }
 }
 
 pub struct SyncSignal<T> {
     ptr: *mut T,
-    s: State,
+    state: State,
+    thread: Thread,
 }
 
 unsafe impl<T> Send for SyncSignal<T> {}
 unsafe impl<T> Sync for SyncSignal<T> {}
 
+#[allow(dead_code)]
 impl<T> SyncSignal<T> {
     #[inline(always)]
-    pub fn new(ptr: *mut T) -> Self {
+    pub fn new(ptr: *mut T, thread: Thread) -> Self {
         let e = SyncSignal {
-            s: Default::default(),
+            state: Default::default(),
             ptr,
+            thread,
         };
 
-        e.s.lock();
+        e.state.lock();
         e
     }
 
@@ -161,72 +190,126 @@ impl<T> SyncSignal<T> {
         if std::mem::size_of::<T>() > 0 {
             std::ptr::write(self.ptr, d);
         }
-        self.s.unlock();
+        if !self.state.unlock() {
+            self.state.force_unlock();
+            self.thread.unpark();
+        }
     }
 
     // read data from pointer, shall not be called more than once
     #[inline(always)]
     pub unsafe fn recv(&self) -> T {
         let d = read_ptr(self.ptr);
-        self.s.unlock();
+        if !self.state.unlock() {
+            self.state.force_unlock();
+            self.thread.unpark();
+        }
         d
     }
 
     // terminates operation and notifies the waiter , shall not be called more than once
     #[inline(always)]
     pub unsafe fn terminate(&self) {
-        self.s.terminate();
+        if !self.state.terminate() {
+            self.state.force_terminate();
+            self.thread.unpark();
+        }
     }
 
-    // wait's for lock to get freed, returns status code of event, 1 done, 2 channel closed
+    // waits for signal and returns true if send/recv operation was successful
     #[inline(always)]
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
-        self.s.wait_unlock() == 0
+        //let mut v = self.state.wait_unlock_some();
+        let until = SystemTime::now() + Duration::from_millis(1);
+        let mut v = self.state.wait_unlock_until(until);
+
+        if v < LOCKED {
+            return v == UNLOCKED;
+        }
+        // enter starvation mod
+        if self.state.upgrade_lock() {
+            v = LOCKED_STARVATION;
+            while v == LOCKED_STARVATION {
+                std::thread::park();
+                v = self.state.value();
+            }
+        } else {
+            v = self.state.value();
+        }
+        v == UNLOCKED
+    }
+
+    // waits for signal and returns true if send/recv operation was successful
+    #[inline(always)]
+    pub fn wait_timeout(&self, until: SystemTime) -> bool {
+        let v = self.state.wait_unlock_until(until);
+        v == UNLOCKED
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.state.value() >= LOCKED
+    }
+
+    #[inline(always)]
+    pub fn is_terminated(&self) -> bool {
+        self.state.value() == TERMINATED
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum Signal<T> {
-    Sync(*const SyncSignal<T>),
-    Async(Arc<AsyncSignal<T>>),
+    Sync(*mut SyncSignal<T>),
+    Async(*mut AsyncSignal<T>),
 }
 
 unsafe impl<T> Sync for Signal<T> {}
 unsafe impl<T> Send for Signal<T> {}
 
+#[allow(dead_code)]
 impl<T> Signal<T> {
     pub unsafe fn wait(&self) -> bool {
         match self {
-            Signal::Sync(sig) => (&**sig as &SyncSignal<T>).wait(),
-            Signal::Async(_sig) => panic!("async sig: sync wait shall not happened"),
+            Signal::Sync(sig) => (**sig).wait(),
+            Signal::Async(_sig) => panic!("async sig: sync wait must not happen"),
         }
     }
 
-    pub async unsafe fn wait_async(self) -> bool {
+    pub unsafe fn wait_short(&self) -> u8 {
         match self {
-            Signal::Sync(_sig) => panic!("sync sig: async await shall not happened"),
-            Signal::Async(sig) => sig.deref().await == 0,
+            Signal::Sync(_sig) => panic!("sync sig: wait short must not happen"),
+            Signal::Async(sig) => (**sig).wait_sync_short(),
         }
     }
 
     pub unsafe fn send(&self, d: T) {
         match self {
-            Signal::Sync(sig) => (&**sig as &SyncSignal<T>).send(d),
-            Signal::Async(sig) => sig.send(d),
+            Signal::Sync(sig) => (**sig).send(d),
+            Signal::Async(sig) => (**sig).send(d),
         }
     }
 
-    pub unsafe fn recv(&self) -> T {
+    pub unsafe fn recv(&mut self) -> T {
         match self {
-            Signal::Sync(sig) => (&**sig as &SyncSignal<T>).recv(),
-            Signal::Async(sig) => sig.recv(),
+            Signal::Sync(sig) => (**sig).recv(),
+            Signal::Async(sig) => (**sig).recv(),
         }
     }
 
     pub unsafe fn terminate(&self) {
         match self {
-            Signal::Sync(sig) => (&**sig as &SyncSignal<T>).terminate(),
-            Signal::Async(sig) => sig.terminate(),
+            Signal::Sync(sig) => (**sig).terminate(),
+            Signal::Async(sig) => (**sig).terminate(),
+        }
+    }
+}
+
+impl<T> PartialEq for Signal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Sync(l0), Self::Sync(r0)) => l0 == r0,
+            (Self::Async(l0), Self::Async(r0)) => l0 == r0,
+            _ => false,
         }
     }
 }

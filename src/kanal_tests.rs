@@ -6,7 +6,7 @@ mod tests {
         Sender,
     };
 
-    const MESSAGES: usize = 100000;
+    const MESSAGES: usize = 1000000;
     const THREADS: usize = 8;
 
     fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {

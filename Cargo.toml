@@ -1,19 +1,25 @@
 [package]
 name = "kanal"
-version = "0.1.0-beta2"
+version = "0.1.0-pre1"
 edition = "2021"
 authors = ["Khashayar Fereidani"]
-description = "Fastest sync and async channel that Rust deserves"
+description = "The fast sync and async channel that Rust deserves"
 repository = "https://github.com/fereidani/kanal"
-keywords = ["channel", "mpsc", "mpmc", "csp", "async"]
+keywords = ["channel", "mpsc", "mpmc", "csp", "async", "golang"]
 categories = ["concurrency", "data-structures","asynchronous"]
 license = "MIT"
 readme = "README.md"
 
 [dependencies]
-lock_api = "0.4.7"
+lock_api = "0.4"
+pin-project-lite = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features =["rt-multi-thread", "test-util", "macros"] }
 crossbeam = "0.8"
 
+[features]
+default = ["async","async_short_sync"]
+async=[]
+async_short_sync=[]
+sync=[]

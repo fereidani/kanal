@@ -1,13 +1,17 @@
-use std::{
-    collections::{LinkedList, VecDeque},
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 
-use crate::mutex::Mutex;
+use crate::mutex::{Mutex, MutexGuard};
+//use std::sync::{Mutex, MutexGuard};
+//use spin::mutex::Mutex;
 
 use crate::signal::Signal;
 
 pub type Internal<T> = Arc<Mutex<ChannelInternal<T>>>;
+
+#[inline(always)]
+pub fn acquire_internal<T>(internal: &'_ Internal<T>) -> MutexGuard<'_, ChannelInternal<T>> {
+    internal.lock()
+}
 
 /// Internal of channel that holds queues, wait lists and general state of channel,
 ///   it's shared among senders and receivers with an atomic counter and a mutex
@@ -15,9 +19,9 @@ pub struct ChannelInternal<T> {
     // KEEP THE ORDER
     pub queue: VecDeque<T>,
     // receiver will wait until queue becomes full
-    pub recv_wait: LinkedList<Signal<T>>,
+    pub recv_wait: VecDeque<Signal<T>>,
     // sender will wait until queue becomes empty
-    pub send_wait: LinkedList<Signal<T>>,
+    pub send_wait: VecDeque<Signal<T>>,
     pub capacity: usize,
     pub recv_count: u32,
     pub send_count: u32,
@@ -34,8 +38,8 @@ impl<T> ChannelInternal<T> {
 
         let ret = Self {
             queue: VecDeque::with_capacity(capacity),
-            recv_wait: LinkedList::new(),
-            send_wait: LinkedList::new(),
+            recv_wait: VecDeque::new(),
+            send_wait: VecDeque::new(),
             recv_count: 1,
             send_count: 1,
             capacity: abstract_capacity,
@@ -76,6 +80,28 @@ impl<T> ChannelInternal<T> {
     #[inline(always)]
     pub fn push_recv(&mut self, s: Signal<T>) {
         self.recv_wait.push_back(s);
+    }
+
+    #[inline(always)]
+    pub fn cancel_send_signal(&mut self, sig: Signal<T>) -> bool {
+        for (i, send) in self.send_wait.iter().enumerate() {
+            if sig == *send {
+                self.send_wait.remove(i);
+                return true;
+            }
+        }
+        false
+    }
+
+    #[inline(always)]
+    pub fn cancel_recv_signal(&mut self, sig: Signal<T>) -> bool {
+        for (i, recv) in self.recv_wait.iter().enumerate() {
+            if sig == *recv {
+                self.recv_wait.remove(i);
+                return true;
+            }
+        }
+        false
     }
 }
 
