@@ -39,7 +39,7 @@ unsafe impl<T> Send for AsyncSignal<T> {}
 #[derive(Default)]
 pub struct WakerStore(Mutex<Cell<Option<Waker>>>);
 
-#[allow(dead_code)]
+#[cfg(feature = "async")]
 impl WakerStore {
     pub fn register(&self, w: &Waker) {
         let waker = self.0.lock();
