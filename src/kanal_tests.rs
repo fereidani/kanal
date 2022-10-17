@@ -148,39 +148,13 @@ mod tests {
 mod async_tests {
     use crate::kanal_tests::{MESSAGES, THREADS};
     use crate::{bounded_async, unbounded_async, AsyncReceiver, AsyncSender};
+    // Executor with constant config. no-size
+    static EXEC: Exec = Exec;
 
     fn new_async<T>(cap: Option<usize>) -> (AsyncSender<T>, AsyncReceiver<T>) {
         match cap {
             None => unbounded_async(),
             Some(cap) => bounded_async(cap),
-        }
-    }
-
-    async fn async_mpmc(cap: Option<usize>) {
-        let (tx, rx) = new_async(cap);
-        let mut list = Vec::new();
-        for _ in 0..THREADS {
-            let tx = tx.clone();
-            let h = tokio::spawn(async move {
-                for _i in 0..MESSAGES / THREADS {
-                    tx.send(1).await.unwrap();
-                }
-            });
-            list.push(h);
-        }
-
-        for _ in 0..THREADS {
-            let rx = rx.clone();
-            let h = tokio::spawn(async move {
-                for _ in 0..MESSAGES / THREADS {
-                    rx.recv().await.unwrap();
-                }
-            });
-            list.push(h);
-        }
-
-        for h in list {
-            h.await.unwrap();
         }
     }
 
@@ -219,17 +193,49 @@ mod async_tests {
         }
     }
 
-    async fn async_spsc(cap: Option<usize>) {
-        let (tx, rx) = new_async(cap);
+    #[derive(Copy, Clone)]
+    struct Exec<const M: usize = MESSAGES>;
+    impl<const M: usize> Exec<M> {
+        async fn async_spsc(self, cap: Option<usize>) {
+            let (tx, rx) = new_async(cap);
 
-        tokio::spawn(async move {
-            for _i in 0..MESSAGES {
-                tx.send(1).await.unwrap();
+            tokio::spawn(async move {
+                for _i in 0..M {
+                    tx.send(1).await.unwrap();
+                }
+            });
+
+            for _ in 0..M {
+                assert_eq!(rx.recv().await.unwrap(), 1);
             }
-        });
+        }
 
-        for _ in 0..MESSAGES {
-            assert_eq!(rx.recv().await.unwrap(), 1);
+        async fn async_mpmc(self, cap: Option<usize>) {
+            let (tx, rx) = new_async(cap);
+            let mut list = Vec::new();
+            for _ in 0..THREADS {
+                let tx = tx.clone();
+                let h = tokio::spawn(async move {
+                    for _i in 0..M / THREADS {
+                        tx.send(1).await.unwrap();
+                    }
+                });
+                list.push(h);
+            }
+
+            for _ in 0..THREADS {
+                let rx = rx.clone();
+                let h = tokio::spawn(async move {
+                    for _i in 0..M / THREADS {
+                        rx.recv().await.unwrap();
+                    }
+                });
+                list.push(h);
+            }
+
+            for h in list {
+                h.await.unwrap();
+            }
         }
     }
 
@@ -239,6 +245,7 @@ mod async_tests {
         s.send(0).await.unwrap();
         assert_eq!(r.recv().await.unwrap(), 0);
     }
+
     #[tokio::test]
     async fn async_two_msg_0() {
         async_two_msg(0).await;
@@ -254,37 +261,37 @@ mod async_tests {
 
     #[tokio::test]
     async fn async_mpmc_0() {
-        async_mpmc(Some(0)).await;
+        Exec::<100>.async_mpmc(Some(0)).await;
     }
 
     #[tokio::test]
     async fn async_mpmc_n() {
-        async_mpmc(Some(MESSAGES)).await;
+        EXEC.async_mpmc(Some(MESSAGES)).await;
     }
 
     #[tokio::test]
     async fn async_mpmc_u() {
-        async_mpmc(None).await;
+        EXEC.async_spsc(None).await;
     }
 
     #[tokio::test]
     async fn async_spsc_0() {
-        async_spsc(Some(0)).await;
+        Exec::<100>.async_spsc(Some(0)).await;
     }
 
     #[tokio::test]
     async fn async_spsc_1() {
-        async_spsc(Some(1)).await;
+        Exec::<100>.async_spsc(Some(1)).await;
     }
 
     #[tokio::test]
     async fn async_spsc_n() {
-        async_spsc(Some(MESSAGES)).await;
+        EXEC.async_spsc(Some(MESSAGES)).await;
     }
 
     #[tokio::test]
     async fn async_spsc_u() {
-        async_spsc(None).await;
+        EXEC.async_spsc(None).await;
     }
 
     #[tokio::test]

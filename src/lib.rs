@@ -26,6 +26,7 @@ use std::{
 };
 
 use std::fmt;
+use std::fmt::Debug;
 
 #[cfg(feature = "async")]
 use signal::AsyncSignal;
@@ -48,14 +49,13 @@ pub enum Error {
 impl std::error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
+        fmt::Display::fmt(
             match *self {
                 Error::Closed => "channel is closed",
                 Error::SendClosed => "channel send side is closed",
                 Error::ReceiveClosed => "channel receive side is closed",
-            }
+            },
+            f,
         )
     }
 }
@@ -71,15 +71,14 @@ pub enum ErrorTimeout {
 impl std::error::Error for ErrorTimeout {}
 impl fmt::Display for ErrorTimeout {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
+        fmt::Display::fmt(
             match *self {
                 ErrorTimeout::Closed => "channel is closed",
                 ErrorTimeout::SendClosed => "channel send side is closed",
                 ErrorTimeout::ReceiveClosed => "channel receive side is closed",
                 ErrorTimeout::Timeout => "channel operation timeout",
-            }
+            },
+            f,
         )
     }
 }

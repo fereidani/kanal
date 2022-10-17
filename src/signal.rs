@@ -308,7 +308,7 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => SyncSignal::send(sig, d),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => (&*sig).send(d),
+            Signal::Async(sig) => (*sig).send(d),
         }
     }
 
@@ -316,7 +316,7 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => SyncSignal::recv(sig),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => (&*sig).recv(),
+            Signal::Async(sig) => (*sig).recv(),
         }
     }
 
@@ -324,7 +324,7 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => SyncSignal::terminate(*sig),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => (&**sig).terminate(),
+            Signal::Async(sig) => (**sig).terminate(),
         }
     }
 }
