@@ -17,7 +17,6 @@ use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
-    // async_lock: AtomicU8,
     data: *mut ManuallyDrop<T>,
     state: State,
     waker: WakerStore,
