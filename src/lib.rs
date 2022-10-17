@@ -8,7 +8,7 @@
 #[cfg(feature = "async")]
 mod future;
 #[cfg(feature = "async")]
-use future::*;
+pub use future::*;
 
 pub(crate) mod internal;
 mod kanal_tests;
