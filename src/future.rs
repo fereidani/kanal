@@ -168,13 +168,13 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     return Poll::Ready(Err(Error::Closed));
                 }
                 if let Some(v) = internal.queue.pop_front() {
-                    if let Some(mut p) = internal.next_send() {
+                    if let Some(p) = internal.next_send() {
                         // if there is a sender take its data and push it in queue
                         unsafe { internal.queue.push_back(p.recv()) }
                     }
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(v))
-                } else if let Some(mut p) = internal.next_send() {
+                } else if let Some(p) = internal.next_send() {
                     drop(internal);
                     *this.state = FutureState::Done;
                     unsafe { Poll::Ready(Ok(p.recv())) }
