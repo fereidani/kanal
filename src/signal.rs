@@ -1,7 +1,10 @@
 use std::cell::Cell;
 
+#[cfg(feature = "async")]
 use std::future::Future;
+#[cfg(feature = "async")]
 use std::mem::ManuallyDrop;
+#[cfg(feature = "async")]
 use std::ptr::null_mut;
 
 use std::task::Waker;
@@ -36,6 +39,7 @@ unsafe impl<T> Send for AsyncSignal<T> {}
 #[derive(Default)]
 pub struct WakerStore(Mutex<Cell<Option<Waker>>>);
 
+#[cfg(feature = "async")]
 impl WakerStore {
     pub fn register(&self, w: &Waker) {
         let waker = self.0.lock();
@@ -49,6 +53,7 @@ impl WakerStore {
     }
 }
 
+#[cfg(feature = "async")]
 impl<T> Future for AsyncSignal<T> {
     type Output = u8;
     fn poll(
@@ -82,6 +87,7 @@ unsafe fn read_ptr<T>(ptr: *const T) -> T {
     }
 }
 
+#[cfg(feature = "async")]
 impl<T> AsyncSignal<T> {
     // signal to send data to a writer
     #[inline(always)]
@@ -273,6 +279,7 @@ impl<T> SyncSignal<T> {
 #[derive(Clone, Copy)]
 pub enum Signal<T> {
     Sync(*const SyncSignal<T>),
+    #[cfg(feature = "async")]
     Async(*const AsyncSignal<T>),
 }
 
@@ -284,6 +291,7 @@ impl<T> Signal<T> {
     pub unsafe fn wait(&self) -> bool {
         match self {
             Signal::Sync(sig) => (**sig).wait(),
+            #[cfg(feature = "async")]
             Signal::Async(_sig) => panic!("async sig: sync wait must not happen"),
         }
     }
@@ -291,6 +299,7 @@ impl<T> Signal<T> {
     pub unsafe fn wait_short(&self) -> u8 {
         match self {
             Signal::Sync(_sig) => panic!("sync sig: wait short must not happen"),
+            #[cfg(feature = "async")]
             Signal::Async(sig) => (**sig).wait_sync_short(),
         }
     }
@@ -298,6 +307,7 @@ impl<T> Signal<T> {
     pub unsafe fn send(self, d: T) {
         match self {
             Signal::Sync(sig) => SyncSignal::send(sig, d),
+            #[cfg(feature = "async")]
             Signal::Async(sig) => (&*sig).send(d),
         }
     }
@@ -305,6 +315,7 @@ impl<T> Signal<T> {
     pub unsafe fn recv(self) -> T {
         match self {
             Signal::Sync(sig) => SyncSignal::recv(sig),
+            #[cfg(feature = "async")]
             Signal::Async(sig) => (&*sig).recv(),
         }
     }
@@ -312,6 +323,7 @@ impl<T> Signal<T> {
     pub unsafe fn terminate(&self) {
         match self {
             Signal::Sync(sig) => SyncSignal::terminate(*sig),
+            #[cfg(feature = "async")]
             Signal::Async(sig) => (&**sig).terminate(),
         }
     }
@@ -321,7 +333,9 @@ impl<T> PartialEq for Signal<T> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Sync(l0), Self::Sync(r0)) => l0 == r0,
+            #[cfg(feature = "async")]
             (Self::Async(l0), Self::Async(r0)) => l0 == r0,
+            #[cfg(feature = "async")]
             _ => false,
         }
     }

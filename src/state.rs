@@ -1,6 +1,8 @@
+#[cfg(feature = "async")]
+use std::time::Duration;
 use std::{
     sync::atomic::{AtomicU8, Ordering},
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 /// State keeps state of signals in both sync and async to make eventing for senders and receivers possible
@@ -55,6 +57,7 @@ impl State {
         self.v.load(Ordering::SeqCst)
     }
 
+    #[cfg(feature = "async")]
     #[inline(always)]
     pub fn wait_indefinitely(&self) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
