@@ -2,6 +2,7 @@ use std::cell::Cell;
 
 #[cfg(feature = "async")]
 use std::future::Future;
+use std::marker::PhantomData;
 #[cfg(feature = "async")]
 use std::mem::ManuallyDrop;
 #[cfg(feature = "async")]
@@ -20,17 +21,7 @@ pub struct AsyncSignal<T> {
     data: *mut ManuallyDrop<T>,
     state: State,
     waker: WakerStore,
-}
-
-#[cfg(feature = "async")]
-impl<T> Default for AsyncSignal<T> {
-    fn default() -> Self {
-        Self {
-            data: null_mut(),
-            state: Default::default(),
-            waker: Default::default(),
-        }
-    }
+    phantum: PhantomData<Box<ManuallyDrop<T>>>,
 }
 
 #[cfg(feature = "async")]
@@ -96,6 +87,7 @@ impl<T> AsyncSignal<T> {
             state: Default::default(),
             data: null_mut(),
             waker: Default::default(),
+            phantum: PhantomData,
         };
         e.state.store(LOCKED);
         e
@@ -166,6 +158,7 @@ pub struct SyncSignal<T> {
     ptr: *mut T,
     state: State,
     thread: Thread,
+    phantum: PhantomData<Box<T>>,
 }
 
 unsafe impl<T> Send for SyncSignal<T> {}
@@ -179,6 +172,7 @@ impl<T> SyncSignal<T> {
             state: Default::default(),
             ptr,
             thread,
+            phantum: PhantomData,
         };
 
         e.state.lock();
