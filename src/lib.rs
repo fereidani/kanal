@@ -15,6 +15,7 @@ mod kanal_tests;
 pub(crate) mod mutex;
 mod signal;
 pub(crate) mod state;
+mod stack_cell;
 
 use internal::{acquire_internal, ChannelInternal, Internal};
 
