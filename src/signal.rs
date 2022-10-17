@@ -26,17 +26,18 @@ pub struct AsyncSignal<T> {
 #[cfg(feature = "async")]
 unsafe impl<T> Send for AsyncSignal<T> {}
 
+#[cfg(feature = "async")]
 #[derive(Default)]
-pub struct WakerStore(Mutex<Cell<Option<Waker>>>);
+pub struct WakerStore(Mutex<Option<Waker>>);
 
 #[cfg(feature = "async")]
 impl WakerStore {
     pub fn register(&self, w: &Waker) {
-        let waker = self.0.lock();
-        waker.set(Some(w.clone()));
+        let mut waker = self.0.lock();
+        *waker = Some(w.clone());
     }
     pub fn wake(&self) {
-        let waker = self.0.lock();
+        let mut waker = self.0.lock();
         if let Some(w) = waker.take() {
             w.wake();
         }
