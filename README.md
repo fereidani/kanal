@@ -22,7 +22,7 @@ Kanal is in pre-release and should not be used in production yet.
 
 ## Why Kanal is faster?
 1. Kanal is using direct memory access to copy objects from stack of the sender or write to stack of the receiver exactly the same as Golang, this eliminates any heap allocation need for bounded(0) channels and also reduce stack allocation substantially too.
-2. Kanal is using specially tuned mutex for it's channel lock, it is possible because channel internal lock time is predictable. That said the mutex is implemeneted with eventual fairness.
+2. Kanal is using specially tuned mutex for its channel lock, it is possible because channel internal lock time is predictable. That said the mutex is implemeneted with eventual fairness.
 3. Rust amazing compiler
 
 ## Why to use Kanal?
@@ -38,7 +38,7 @@ Kanal is in pre-release and should not be used in production yet.
 
 
 ### Benchmark Results
-Results are normalized based on kanal sync results, so 60x means the test for that framework takes 60 times slower than kanal.
+Results are normalized based on Kanal sync results, so 60x means the test for that framework takes 60 times slower than Kanal.
 
 Machine: `AMD Ryzen Threadripper 2950X 16-Core Processor`<br />
 Rust: `rustc rustc 1.64.0`<br />
