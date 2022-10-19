@@ -22,7 +22,7 @@ use internal::{acquire_internal, ChannelInternal, Internal};
 use std::mem::ManuallyDrop;
 use std::{
     mem::MaybeUninit,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use std::fmt;
@@ -174,6 +174,7 @@ macro_rules! shared_impl {
 }
 
 impl<T> Sender<T> {
+    pub fn report(&self) {}
     /// Sends data to the channel
     #[inline(always)]
     pub fn send(&self, mut data: T) -> Result<(), Error> {
@@ -193,13 +194,17 @@ impl<T> Sender<T> {
                 return Err(Error::ReceiveClosed);
             }
             // send directly to wait list
-
-            let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
-            internal.push_send(sig.as_signal());
-            drop(internal);
-            if !sig.wait() {
-                return Err(Error::SendClosed);
+            {
+                let _data = &data as *const T; // pin to address
+                let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
+                let _sig = &sig as *const SyncSignal<T>;
+                internal.push_send(sig.as_signal());
+                drop(internal);
+                if !sig.wait() {
+                    return Err(Error::SendClosed);
+                }
             }
+
             // data semantically is moved so forget about droping it if it requires droping
             if std::mem::needs_drop::<T>() {
                 std::mem::forget(data);
@@ -211,7 +216,7 @@ impl<T> Sender<T> {
     /// Sends data to the channel
     #[inline(always)]
     pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), ErrorTimeout> {
-        let deadline = SystemTime::now().checked_add(duration).unwrap();
+        let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count == 0 {
             return Err(ErrorTimeout::Closed);
@@ -262,7 +267,7 @@ impl<T> Sender<T> {
         data: &mut Option<T>,
         duration: Duration,
     ) -> Result<(), ErrorTimeout> {
-        let deadline = SystemTime::now().checked_add(duration).unwrap();
+        let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count == 0 {
             return Err(ErrorTimeout::Closed);
@@ -353,7 +358,7 @@ impl<T> AsyncSender<T> {
             state: FutureState::Zero,
             internal: &self.internal,
             sig: AsyncSignal::new(),
-            data: ManuallyDrop::new(data),
+            data: ManuallyDrop::new(data).into(),
         }
     }
     /// Tries sending to the channel without waiting in the wait list
@@ -419,6 +424,10 @@ pub struct AsyncReceiver<T> {
 }
 
 impl<T> Receiver<T> {
+    pub fn report(&self) {
+        let internal = acquire_internal(&self.internal);
+        println!("sc:{} rc:{}", internal.send_count, internal.recv_count)
+    }
     /// Receives data from the channel
     #[inline(always)]
     pub fn recv(&self) -> Result<T, Error> {
@@ -441,12 +450,16 @@ impl<T> Receiver<T> {
             }
             // no active waiter so push to queue
             let mut ret = MaybeUninit::<T>::uninit();
-            let sig = SyncSignal::new(ret.as_mut_ptr(), std::thread::current());
-            internal.push_recv(sig.as_signal());
-            drop(internal);
+            {
+                let _ret = ret.as_ptr(); // pin to address
+                let sig = SyncSignal::new(ret.as_mut_ptr(), std::thread::current());
+                let _sig = &sig as *const SyncSignal<T>;
+                internal.push_recv(sig.as_signal());
+                drop(internal);
 
-            if !sig.wait() {
-                return Err(Error::ReceiveClosed);
+                if !sig.wait() {
+                    return Err(Error::ReceiveClosed);
+                }
             }
             Ok(unsafe { ret.assume_init() })
         }
@@ -454,7 +467,7 @@ impl<T> Receiver<T> {
     }
     #[inline(always)]
     pub fn recv_timeout(&self, duration: Duration) -> Result<T, ErrorTimeout> {
-        let deadline = SystemTime::now().checked_add(duration).unwrap();
+        let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
             return Err(ErrorTimeout::Closed);
@@ -469,7 +482,7 @@ impl<T> Receiver<T> {
             drop(internal);
             unsafe { Ok(p.recv()) }
         } else {
-            if SystemTime::now() > deadline {
+            if Instant::now() > deadline {
                 return Err(ErrorTimeout::Timeout);
             }
             if internal.send_count == 0 {

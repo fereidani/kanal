@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 #[cfg(feature = "async")]
 use std::future::Future;
 use std::marker::PhantomData;
@@ -10,7 +8,7 @@ use std::ptr::null_mut;
 
 use std::task::Waker;
 use std::thread::Thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use crate::mutex::Mutex;
 use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
@@ -143,7 +141,7 @@ impl<T> AsyncSignal<T> {
     // wait for short time for lock and returns true if lock is unlocked
     #[inline(always)]
     pub fn wait_sync_short(&self) -> u8 {
-        let until = SystemTime::now() + Duration::from_nanos(1e6 as u64);
+        let until = Instant::now() + Duration::from_nanos(1e6 as u64);
         self.state.wait_unlock_until(until)
     }
 
@@ -234,7 +232,7 @@ impl<T> SyncSignal<T> {
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
         //let mut v = self.state.wait_unlock_some();
-        let until = SystemTime::now() + Duration::from_millis(1);
+        let until = Instant::now() + Duration::from_millis(1);
         let mut v = self.state.wait_unlock_until(until);
 
         if v < LOCKED {
@@ -255,7 +253,7 @@ impl<T> SyncSignal<T> {
 
     // waits for signal and returns true if send/recv operation was successful
     #[inline(always)]
-    pub fn wait_timeout(&self, until: SystemTime) -> bool {
+    pub fn wait_timeout(&self, until: Instant) -> bool {
         let v = self.state.wait_unlock_until(until);
         v == UNLOCKED
     }

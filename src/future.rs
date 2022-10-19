@@ -1,4 +1,4 @@
-use std::{future::Future, mem::needs_drop, pin::Pin, task::Poll};
+use std::{cell::UnsafeCell, future::Future, mem::needs_drop, pin::Pin, task::Poll};
 
 use crate::{
     internal::{acquire_internal, Internal},
@@ -36,7 +36,7 @@ pin_project! {
         pub(crate) internal: &'a Internal<T>,
         #[pin]
         pub(crate) sig: AsyncSignal<T>,
-        pub(crate) data: ManuallyDrop<T>,
+        pub(crate) data: UnsafeCell<ManuallyDrop<T>>,
     }
     impl<'a,T> PinnedDrop for SendFuture<'a,T> {
         fn drop(mut this: Pin<&mut Self>) {
@@ -46,7 +46,7 @@ pin_project! {
                     // someone got signal ownership, should wait until response
                     this.sig.wait_indefinitely();
                 }else if needs_drop::<T>(){
-                    unsafe{ManuallyDrop::drop(&mut this.data)}
+                    unsafe{ManuallyDrop::drop(this.data.get_mut())}
                 }
             }
         }
@@ -69,13 +69,13 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
-                    unsafe { first.send(ManuallyDrop::take(&mut *this.data)) }
+                    unsafe { first.send(ManuallyDrop::take(this.data.get_mut())) }
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(()))
                 } else if internal.queue.len() < internal.capacity {
                     internal
                         .queue
-                        .push_back(unsafe { ManuallyDrop::take(&mut *this.data) });
+                        .push_back(unsafe { ManuallyDrop::take(this.data.get_mut()) });
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(()))
                 } else {
@@ -84,7 +84,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                         return Poll::Ready(Err(Error::ReceiveClosed));
                     }
                     *this.state = FutureState::Waiting;
-                    this.sig.set_ptr(this.data);
+                    this.sig.set_ptr(this.data.get_mut());
                     // send directly to wait list
                     internal.push_send(this.sig.as_signal());
                     drop(internal);

@@ -2,7 +2,7 @@
 use std::time::Duration;
 use std::{
     sync::atomic::{AtomicU8, Ordering},
-    time::SystemTime,
+    time::Instant,
 };
 
 /// State keeps state of signals in both sync and async to make eventing for senders and receivers possible
@@ -34,12 +34,12 @@ impl State {
     }
 
     #[inline(always)]
-    pub fn wait_unlock_until(&self, until: SystemTime) -> u8 {
+    pub fn wait_unlock_until(&self, until: Instant) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
         if v != LOCKED {
             return v;
         }
-        while SystemTime::now() < until {
+        while Instant::now() < until {
             for _ in 0..(1 << 10) {
                 let v = self.v.load(Ordering::SeqCst);
                 if v != LOCKED {
@@ -48,7 +48,7 @@ impl State {
                 //spin_loop();
                 std::thread::yield_now();
             }
-            let remaining_time = until.duration_since(SystemTime::now()).unwrap_or_default();
+            let remaining_time = until.duration_since(Instant::now());
             if remaining_time.is_zero() {
                 break;
             }
