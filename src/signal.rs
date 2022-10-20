@@ -1,10 +1,6 @@
 #[cfg(feature = "async")]
 use std::future::Future;
 use std::marker::PhantomData;
-#[cfg(feature = "async")]
-use std::mem::ManuallyDrop;
-#[cfg(feature = "async")]
-use std::ptr::null_mut;
 
 use std::task::Waker;
 use std::thread::Thread;
@@ -15,10 +11,10 @@ use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
-    data: *mut ManuallyDrop<T>,
+    data: *mut T,
     state: State,
     waker: WakerStore,
-    phantum: PhantomData<Box<ManuallyDrop<T>>>,
+    phantum: PhantomData<Box<T>>,
 }
 
 #[cfg(feature = "async")]
@@ -39,6 +35,9 @@ impl WakerStore {
         if let Some(w) = waker.take() {
             w.wake();
         }
+    }
+    pub fn take(&self) -> Option<Waker> {
+        return self.0.lock().take();
     }
 }
 
@@ -83,7 +82,7 @@ impl<T> AsyncSignal<T> {
     pub fn new() -> Self {
         let e = Self {
             state: Default::default(),
-            data: null_mut(),
+            data: std::ptr::null_mut(),
             waker: Default::default(),
             phantum: PhantomData,
         };
@@ -92,8 +91,8 @@ impl<T> AsyncSignal<T> {
     }
 
     #[inline(always)]
-    pub fn set_ptr(&mut self, data: &mut ManuallyDrop<T>) {
-        self.data = data as *mut ManuallyDrop<T>;
+    pub fn set_ptr(&mut self, data: *mut T) {
+        self.data = data;
     }
 
     // convert async signal to common signal that works with channel internal
@@ -102,40 +101,46 @@ impl<T> AsyncSignal<T> {
         Signal::Async(self as *const Self)
     }
 
-    // signals waiter that its request is processed
     #[inline(always)]
-    fn wake(&self) {
-        self.waker.wake();
-    }
-
-    #[inline(always)]
-    pub unsafe fn send(&self, d: T) {
+    pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
-            *self.data = ManuallyDrop::new(d);
+            *(*this).data = d;
         }
-        self.state.store(UNLOCKED);
-        self.wake();
+        let waker_option = (*this).waker.take();
+        (*this).state.store(UNLOCKED);
+        if let Some(waker) = waker_option {
+            waker.wake();
+        }
     }
 
     #[inline(always)]
-    pub unsafe fn recv(&self) -> T {
+    pub unsafe fn recv(this: *const Self) -> T {
         if std::mem::size_of::<T>() > 0 {
-            let r = ManuallyDrop::take(&mut *self.data);
-            self.state.store(UNLOCKED);
-            self.wake();
+            let waker_option = (*this).waker.take();
+            let r = read_ptr((*this).data);
+            (*this).state.store(UNLOCKED);
+            if let Some(waker) = waker_option {
+                waker.wake();
+            }
             r
         } else {
-            self.state.store(UNLOCKED);
-            self.wake();
+            let waker_option = (*this).waker.take();
+            (*this).state.store(UNLOCKED);
+            if let Some(waker) = waker_option {
+                waker.wake();
+            }
             std::mem::zeroed()
         }
     }
 
     // terminates operation and notifies the waiter , shall not be called more than once
     #[inline(always)]
-    pub unsafe fn terminate(&self) {
-        self.state.store(TERMINATED);
-        self.wake();
+    pub unsafe fn terminate(this: *const Self) {
+        let waker_option = (*this).waker.take();
+        (*this).state.store(TERMINATED);
+        if let Some(waker) = waker_option {
+            waker.wake();
+        }
     }
 
     // wait for short time for lock and returns true if lock is unlocked
@@ -300,7 +305,7 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => SyncSignal::send(sig, d),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => (*sig).send(d),
+            Signal::Async(sig) => AsyncSignal::send(sig, d),
         }
     }
 
@@ -308,7 +313,7 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => SyncSignal::recv(sig),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => (*sig).recv(),
+            Signal::Async(sig) => AsyncSignal::recv(sig),
         }
     }
 
@@ -316,7 +321,7 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => SyncSignal::terminate(*sig),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => (**sig).terminate(),
+            Signal::Async(sig) => AsyncSignal::terminate(*sig),
         }
     }
 }

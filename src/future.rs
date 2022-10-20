@@ -1,12 +1,15 @@
-use std::{cell::UnsafeCell, future::Future, mem::needs_drop, pin::Pin, task::Poll};
+use std::{
+    future::Future,
+    mem::{needs_drop, MaybeUninit},
+    pin::Pin,
+    task::Poll,
+};
 
 use crate::{
     internal::{acquire_internal, Internal},
     signal::AsyncSignal,
     state, Error,
 };
-
-use std::mem::ManuallyDrop;
 
 use pin_project_lite::pin_project;
 
@@ -36,7 +39,7 @@ pin_project! {
         pub(crate) internal: &'a Internal<T>,
         #[pin]
         pub(crate) sig: AsyncSignal<T>,
-        pub(crate) data: UnsafeCell<ManuallyDrop<T>>,
+        pub(crate) data: MaybeUninit<T>,
     }
     impl<'a,T> PinnedDrop for SendFuture<'a,T> {
         fn drop(mut this: Pin<&mut Self>) {
@@ -46,7 +49,7 @@ pin_project! {
                     // someone got signal ownership, should wait until response
                     this.sig.wait_indefinitely();
                 }else if needs_drop::<T>(){
-                    unsafe{ManuallyDrop::drop(this.data.get_mut())}
+                    unsafe{this.data.assume_init_drop()};
                 }
             }
         }
@@ -69,13 +72,13 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
-                    unsafe { first.send(ManuallyDrop::take(this.data.get_mut())) }
+                    unsafe { first.send(std::ptr::read(this.data.as_mut_ptr())) }
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(()))
                 } else if internal.queue.len() < internal.capacity {
                     internal
                         .queue
-                        .push_back(unsafe { ManuallyDrop::take(this.data.get_mut()) });
+                        .push_back(unsafe { std::ptr::read(this.data.as_mut_ptr()) });
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(()))
                 } else {
@@ -84,16 +87,18 @@ impl<'a, T> Future for SendFuture<'a, T> {
                         return Poll::Ready(Err(Error::ReceiveClosed));
                     }
                     *this.state = FutureState::Waiting;
-                    this.sig.set_ptr(this.data.get_mut());
+                    this.sig.set_ptr(this.data.as_mut_ptr());
                     // send directly to wait list
                     internal.push_send(this.sig.as_signal());
                     drop(internal);
-                    #[cfg(feature = "async_short_sync")]
-                    {
-                        let v = this.sig.wait_sync_short();
-                        if v == state::UNLOCKED {
-                            *this.state = FutureState::Done;
-                            return Poll::Ready(Ok(()));
+                    if false {
+                        #[cfg(feature = "async_short_sync")]
+                        {
+                            let v = this.sig.wait_sync_short();
+                            if v == state::UNLOCKED {
+                                *this.state = FutureState::Done;
+                                return Poll::Ready(Ok(()));
+                            }
                         }
                     }
                     let r = this.sig.poll(cx);
@@ -136,7 +141,7 @@ pin_project! {
         pub(crate) internal: &'a Internal<T>,
         #[pin]
         pub(crate) sig: AsyncSignal<T>,
-        pub(crate) data: ManuallyDrop<T>,
+        pub(crate) data: MaybeUninit<T>,
     }
     impl<'a,T> PinnedDrop for ReceiveFuture<'a,T> {
         fn drop(mut this: Pin<&mut Self>) {
@@ -147,7 +152,7 @@ pin_project! {
                     this.sig.wait_indefinitely();
                     // got ownership of data that is not gonna be used ever again, so drop it
                     if needs_drop::<T>(){
-                        unsafe{ManuallyDrop::drop(&mut this.data)}
+                        unsafe { std::ptr::drop_in_place(this.data.as_mut_ptr()) }
                     }
                 }
             }
@@ -184,7 +189,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         return Poll::Ready(Err(Error::SendClosed));
                     }
                     *this.state = FutureState::Waiting;
-                    this.sig.set_ptr(this.data);
+                    this.sig.set_ptr(this.data.as_mut_ptr());
                     // no active waiter so push to queue
                     internal.push_recv(this.sig.as_signal());
                     drop(internal);
@@ -193,7 +198,13 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         let v = this.sig.wait_sync_short();
                         if v == state::UNLOCKED {
                             *this.state = FutureState::Done;
-                            return Poll::Ready(Ok(unsafe { ManuallyDrop::take(&mut *this.data) }));
+                            if std::mem::size_of::<T>() == 0 {
+                                return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
+                            } else {
+                                return Poll::Ready(Ok(unsafe {
+                                    std::ptr::read(this.data.as_mut_ptr())
+                                }));
+                            }
                         }
                     }
                     let v = this.sig.poll(cx);
@@ -205,7 +216,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                                     return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
                                 } else {
                                     return Poll::Ready(Ok(unsafe {
-                                        ManuallyDrop::take(&mut *this.data)
+                                        std::ptr::read(this.data.as_mut_ptr())
                                     }));
                                 }
                             };
@@ -225,7 +236,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                                 return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
                             } else {
                                 return Poll::Ready(Ok(unsafe {
-                                    ManuallyDrop::take(&mut *this.data)
+                                    std::ptr::read(this.data.as_mut_ptr())
                                 }));
                             }
                         }

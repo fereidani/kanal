@@ -1,5 +1,6 @@
 use lock_api::{GuardSend, RawMutex};
 use std::{
+    hint::spin_loop,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -30,8 +31,8 @@ unsafe impl RawMutex for RawMutexLock {
                     if self.try_lock() {
                         return;
                     }
-                    //spin_loop();
-                    std::thread::yield_now();
+                    spin_loop();
+                    //std::thread::yield_now();
                 }
             } else {
                 if cycles < (1 << 31) {

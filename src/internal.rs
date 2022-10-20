@@ -49,13 +49,15 @@ impl<T> ChannelInternal<T> {
     }
 
     /// Terminates remainings signals in queue to notify listeners about closing of channel
-    pub fn terminate_signals(&self) {
+    pub fn terminate_signals(&mut self) {
         for v in &self.send_wait {
             unsafe { v.terminate() }
         }
+        self.send_wait.clear();
         for v in &self.recv_wait {
             unsafe { v.terminate() }
         }
+        self.recv_wait.clear();
     }
 
     /// Returns next signal for sender from wait list

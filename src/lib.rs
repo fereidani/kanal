@@ -18,12 +18,10 @@ pub(crate) mod state;
 
 use internal::{acquire_internal, ChannelInternal, Internal};
 
+use std::cell::UnsafeCell;
 #[cfg(feature = "async")]
-use std::mem::ManuallyDrop;
-use std::{
-    mem::MaybeUninit,
-    time::{Duration, Instant},
-};
+use std::mem::MaybeUninit;
+use std::time::{Duration, Instant};
 
 use std::fmt;
 use std::fmt::Debug;
@@ -98,6 +96,9 @@ impl<T> Drop for Sender<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count > 0 {
             internal.send_count -= 1;
+            if internal.send_count == 0 {
+                internal.terminate_signals();
+            }
         }
     }
 }
@@ -108,6 +109,9 @@ impl<T> Drop for AsyncSender<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count > 0 {
             internal.send_count -= 1;
+            if internal.send_count == 0 {
+                internal.terminate_signals();
+            }
         }
     }
 }
@@ -174,10 +178,9 @@ macro_rules! shared_impl {
 }
 
 impl<T> Sender<T> {
-    pub fn report(&self) {}
     /// Sends data to the channel
     #[inline(always)]
-    pub fn send(&self, mut data: T) -> Result<(), Error> {
+    pub fn send(&self, data: T) -> Result<(), Error> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count == 0 {
             return Err(Error::Closed);
@@ -195,20 +198,21 @@ impl<T> Sender<T> {
             }
             // send directly to wait list
             {
-                let _data = &data as *const T; // pin to address
-                let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
-                let _sig = &sig as *const SyncSignal<T>;
+                let data_cell = UnsafeCell::new(data); // pin to address
+                let mut sig_cell =
+                    UnsafeCell::new(SyncSignal::new(data_cell.get(), std::thread::current()));
+                let sig = sig_cell.get_mut();
                 internal.push_send(sig.as_signal());
                 drop(internal);
                 if !sig.wait() {
                     return Err(Error::SendClosed);
                 }
+                // data semantically is moved so forget about droping it if it requires droping
+                if std::mem::needs_drop::<T>() {
+                    std::mem::forget(data_cell);
+                }
             }
 
-            // data semantically is moved so forget about droping it if it requires droping
-            if std::mem::needs_drop::<T>() {
-                std::mem::forget(data);
-            }
             Ok(())
         }
         // if queue is not empty send data
@@ -358,7 +362,7 @@ impl<T> AsyncSender<T> {
             state: FutureState::Zero,
             internal: &self.internal,
             sig: AsyncSignal::new(),
-            data: ManuallyDrop::new(data).into(),
+            data: MaybeUninit::new(data).into(),
         }
     }
     /// Tries sending to the channel without waiting in the wait list
@@ -424,10 +428,6 @@ pub struct AsyncReceiver<T> {
 }
 
 impl<T> Receiver<T> {
-    pub fn report(&self) {
-        let internal = acquire_internal(&self.internal);
-        println!("sc:{} rc:{}", internal.send_count, internal.recv_count)
-    }
     /// Receives data from the channel
     #[inline(always)]
     pub fn recv(&self) -> Result<T, Error> {
@@ -451,9 +451,9 @@ impl<T> Receiver<T> {
             // no active waiter so push to queue
             let mut ret = MaybeUninit::<T>::uninit();
             {
-                let _ret = ret.as_ptr(); // pin to address
-                let sig = SyncSignal::new(ret.as_mut_ptr(), std::thread::current());
-                let _sig = &sig as *const SyncSignal<T>;
+                let mut sig_cell =
+                    UnsafeCell::new(SyncSignal::new(ret.as_mut_ptr(), std::thread::current()));
+                let sig = sig_cell.get_mut();
                 internal.push_recv(sig.as_signal());
                 drop(internal);
 
@@ -571,7 +571,7 @@ impl<T> AsyncReceiver<T> {
             state: FutureState::Zero,
             sig: AsyncSignal::new(),
             internal: &self.internal,
-            data: ManuallyDrop::new(unsafe { std::mem::zeroed() }),
+            data: MaybeUninit::new(unsafe { std::mem::zeroed() }),
         }
     }
     /// Tries receiving from the channel without waiting in the wait list
@@ -617,6 +617,9 @@ impl<T> Drop for Receiver<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count > 0 {
             internal.recv_count -= 1;
+            if internal.recv_count == 0 {
+                internal.terminate_signals();
+            }
         }
     }
 }
@@ -627,6 +630,9 @@ impl<T> Drop for AsyncReceiver<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count > 0 {
             internal.recv_count -= 1;
+            if internal.recv_count == 0 {
+                internal.terminate_signals();
+            }
         }
     }
 }
