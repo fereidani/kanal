@@ -362,7 +362,7 @@ impl<T> AsyncSender<T> {
             state: FutureState::Zero,
             internal: &self.internal,
             sig: AsyncSignal::new(),
-            data: MaybeUninit::new(data).into(),
+            data: MaybeUninit::new(data),
         }
     }
     /// Tries sending to the channel without waiting in the wait list
