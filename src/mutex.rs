@@ -1,6 +1,5 @@
 use lock_api::{GuardSend, RawMutex};
 use std::{
-    hint::spin_loop,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -9,32 +8,35 @@ pub struct RawMutexLock {
     locked: AtomicBool,
 }
 
+const INITIAL_SLEEP_TIME: usize = 1 << 4;
+const INTIIAL_SPIN_CYCLES: usize = 1 << 12;
+const STRATEGY_SWITCH_THRESHOLD: usize = INITIAL_SLEEP_TIME << 8;
+const MAX_BACKOFF_TIME: usize = 1 << 18; // about 0.26ms
+
 unsafe impl RawMutex for RawMutexLock {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawMutexLock = RawMutexLock {
         locked: AtomicBool::new(false),
     };
     type GuardMarker = GuardSend;
-
     #[inline(always)]
     fn lock(&self) {
         if self.try_lock() {
             return;
         }
-
-        let mut sleep_time: u64 = 1 << 5;
-        let mut cycles: u32 = 1 << 12;
-
+        let mut sleep_time = INITIAL_SLEEP_TIME;
+        let mut cycles = INTIIAL_SPIN_CYCLES;
         loop {
-            if sleep_time < (1 << 19) {
-                for _ in 0..1 << 12 {
+            if sleep_time < STRATEGY_SWITCH_THRESHOLD {
+                for _ in 0..INITIAL_SLEEP_TIME {
                     if self.try_lock() {
                         return;
                     }
-                    spin_loop();
-                    //std::thread::yield_now();
+                    std::thread::yield_now();
+                    //std::hint::spin_loop();
                 }
             } else {
+                // Increase spin cycles by factor of 2, this gives long waiting threads to acquire Mutex faster
                 if cycles < (1 << 31) {
                     cycles <<= 1;
                 }
@@ -42,12 +44,13 @@ unsafe impl RawMutex for RawMutexLock {
                     if self.try_lock() {
                         return;
                     }
-                    //spin_loop();
                     std::thread::yield_now();
+                    //std::hint::spin_loop();
                 }
             }
-            std::thread::sleep(Duration::from_nanos(sleep_time));
-            if sleep_time < (1 << 20) {
+            std::thread::sleep(Duration::from_nanos(sleep_time as u64));
+            // Increase backoff time by factor of 2 until we reach maximum backoff time
+            if sleep_time < MAX_BACKOFF_TIME {
                 sleep_time <<= 1
             }
         }
