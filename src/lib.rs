@@ -18,7 +18,6 @@ pub(crate) mod state;
 
 use internal::{acquire_internal, ChannelInternal, Internal};
 
-#[cfg(feature = "async")]
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
 
@@ -79,6 +78,7 @@ impl fmt::Display for ErrorTimeout {
         )
     }
 }
+
 // Sync sender of channel for type T, it can generate async version via clone_async
 pub struct Sender<T> {
     internal: Internal<T>,
