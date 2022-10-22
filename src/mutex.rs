@@ -70,4 +70,5 @@ unsafe impl RawMutex for RawMutexLock {
 }
 
 pub type Mutex<T> = lock_api::Mutex<RawMutexLock, T>;
+#[cfg(not(feature = "std-mutex"))]
 pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutexLock, T>;
