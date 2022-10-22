@@ -332,6 +332,9 @@ impl<T> Sender<T> {
             internal.queue.push_back(data);
             return Ok(true);
         }
+        if internal.recv_count == 0 {
+            return Err(Error::ReceiveClosed);
+        }
         Ok(false)
     }
 
@@ -382,6 +385,9 @@ impl<T> AsyncSender<T> {
             internal.queue.push_back(data);
             return Ok(true);
         }
+        if internal.recv_count == 0 {
+            return Err(Error::ReceiveClosed);
+        }
         Ok(false)
     }
     #[inline(always)]
@@ -397,6 +403,9 @@ impl<T> AsyncSender<T> {
         } else if internal.queue.len() < internal.capacity {
             internal.queue.push_back(data.take().unwrap());
             return Ok(true);
+        }
+        if internal.recv_count == 0 {
+            return Err(Error::ReceiveClosed);
         }
         Ok(false)
     }
@@ -534,6 +543,9 @@ impl<T> Receiver<T> {
         } else if let Some(p) = internal.next_send() {
             return unsafe { Ok(Some(p.recv())) };
         }
+        if internal.send_count == 0 {
+            return Err(Error::SendClosed);
+        }
         Ok(None)
         // if queue is not empty send data
     }
@@ -595,6 +607,9 @@ impl<T> AsyncReceiver<T> {
             return Ok(Some(v));
         } else if let Some(p) = internal.next_send() {
             return unsafe { Ok(Some(p.recv())) };
+        }
+        if internal.send_count == 0 {
+            return Err(Error::SendClosed);
         }
         Ok(None)
         // if queue is not empty send data
