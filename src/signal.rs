@@ -1,19 +1,18 @@
-#[cfg(feature = "async")]
-use std::future::Future;
 use std::marker::PhantomData;
-
 use std::task::Waker;
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
+//use crate::atomic_waker::AtomicWaker;
 use crate::mutex::Mutex;
 use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
-    data: *mut T,
     state: State,
-    waker: WakerStore,
+    data: *mut T,
+    // TODO: find a solution with using Arc, currently without Arc we have Miri errors.
+    waker: std::sync::Arc<WakerStore>,
     phantum: PhantomData<Box<T>>,
 }
 
@@ -27,14 +26,7 @@ pub struct WakerStore(Mutex<Option<Waker>>);
 #[cfg(feature = "async")]
 impl WakerStore {
     pub fn register(&self, w: &Waker) {
-        let mut waker = self.0.lock();
-        *waker = Some(w.clone());
-    }
-    pub fn wake(&self) {
-        let mut waker = self.0.lock();
-        if let Some(w) = waker.take() {
-            w.wake();
-        }
+        self.0.lock().replace(w.clone());
     }
     pub fn take(&self) -> Option<Waker> {
         return self.0.lock().take();
@@ -42,7 +34,7 @@ impl WakerStore {
 }
 
 #[cfg(feature = "async")]
-impl<T> Future for AsyncSignal<T> {
+impl<T> std::future::Future for AsyncSignal<T> {
     type Output = u8;
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -146,8 +138,7 @@ impl<T> AsyncSignal<T> {
     // wait for short time for lock and returns true if lock is unlocked
     #[inline(always)]
     pub fn wait_sync_short(&self) -> u8 {
-        let until = Instant::now() + Duration::from_nanos(1e6 as u64);
-        self.state.wait_unlock_until(until)
+        self.state.wait_short()
     }
 
     // waits for signal and returns true if send/recv operation was successful
@@ -158,8 +149,8 @@ impl<T> AsyncSignal<T> {
 }
 
 pub struct SyncSignal<T> {
-    ptr: *mut T,
     state: State,
+    ptr: *mut T,
     thread: Thread,
     phantum: PhantomData<Box<T>>,
 }

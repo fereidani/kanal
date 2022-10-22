@@ -91,16 +91,6 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     // send directly to wait list
                     internal.push_send(this.sig.as_signal());
                     drop(internal);
-                    if false {
-                        #[cfg(feature = "async_short_sync")]
-                        {
-                            let v = this.sig.wait_sync_short();
-                            if v == state::UNLOCKED {
-                                *this.state = FutureState::Done;
-                                return Poll::Ready(Ok(()));
-                            }
-                        }
-                    }
                     let r = this.sig.poll(cx);
                     match r {
                         Poll::Ready(v) => {
@@ -193,20 +183,6 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     // no active waiter so push to queue
                     internal.push_recv(this.sig.as_signal());
                     drop(internal);
-                    #[cfg(feature = "async_short_sync")]
-                    {
-                        let v = this.sig.wait_sync_short();
-                        if v == state::UNLOCKED {
-                            *this.state = FutureState::Done;
-                            if std::mem::size_of::<T>() == 0 {
-                                return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
-                            } else {
-                                return Poll::Ready(Ok(unsafe {
-                                    std::ptr::read(this.data.as_mut_ptr())
-                                }));
-                            }
-                        }
-                    }
                     let v = this.sig.poll(cx);
                     match v {
                         Poll::Ready(v) => {
