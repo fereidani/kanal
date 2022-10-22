@@ -90,18 +90,10 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     this.sig.set_ptr(this.data.as_mut_ptr());
                     // send directly to wait list
                     internal.push_send(this.sig.as_signal());
+                    // register waker, it's not ready, so no need to check the return value
+                    _ = this.sig.poll(cx);
                     drop(internal);
-                    let r = this.sig.poll(cx);
-                    match r {
-                        Poll::Ready(v) => {
-                            *this.state = FutureState::Done;
-                            if v == state::UNLOCKED {
-                                return Poll::Ready(Ok(()));
-                            }
-                            Poll::Ready(Err(Error::SendClosed))
-                        }
-                        Poll::Pending => Poll::Pending,
-                    }
+                    Poll::Pending
                 }
             }
             FutureState::Waiting => {
@@ -153,6 +145,7 @@ pin_project! {
 impl<'a, T> Future for ReceiveFuture<'a, T> {
     type Output = Result<T, Error>;
 
+    #[inline(always)]
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
         match this.state {
@@ -182,24 +175,10 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     this.sig.set_ptr(this.data.as_mut_ptr());
                     // no active waiter so push to queue
                     internal.push_recv(this.sig.as_signal());
+                    // register waker, it's not ready, so no need to check the return value
+                    _ = this.sig.poll(cx);
                     drop(internal);
-                    let v = this.sig.poll(cx);
-                    match v {
-                        Poll::Ready(v) => {
-                            *this.state = FutureState::Done;
-                            if v == state::UNLOCKED {
-                                if std::mem::size_of::<T>() == 0 {
-                                    return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
-                                } else {
-                                    return Poll::Ready(Ok(unsafe {
-                                        std::ptr::read(this.data.as_mut_ptr())
-                                    }));
-                                }
-                            };
-                            Poll::Ready(Err(Error::ReceiveClosed))
-                        }
-                        Poll::Pending => Poll::Pending,
-                    }
+                    Poll::Pending
                 }
             }
             FutureState::Waiting => {

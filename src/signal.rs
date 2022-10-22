@@ -89,7 +89,7 @@ impl<T> AsyncSignal<T> {
 
     // convert async signal to common signal that works with channel internal
     #[inline(always)]
-    pub fn as_signal(&mut self) -> Signal<T> {
+    pub fn as_signal(&self) -> Signal<T> {
         Signal::Async(self as *const Self)
     }
 
@@ -221,7 +221,6 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
-        //let mut v = self.state.wait_unlock_some();
         let until = Instant::now() + Duration::from_millis(1);
         let mut v = self.state.wait_unlock_until(until);
 

@@ -45,14 +45,13 @@ impl State {
                 if v != LOCKED {
                     return v;
                 }
-                //spin_loop();
+                //std::hint::spin_loop();
                 std::thread::yield_now();
             }
             let remaining_time = until.duration_since(Instant::now());
             if remaining_time.is_zero() {
                 break;
             }
-            std::thread::yield_now();
         }
         self.v.load(Ordering::SeqCst)
     }
