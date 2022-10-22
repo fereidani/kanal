@@ -135,12 +135,6 @@ impl<T> AsyncSignal<T> {
         }
     }
 
-    // wait for short time for lock and returns true if lock is unlocked
-    #[inline(always)]
-    pub fn wait_sync_short(&self) -> u8 {
-        self.state.wait_short()
-    }
-
     // waits for signal and returns true if send/recv operation was successful
     #[inline(always)]
     pub fn wait_indefinitely(&self) -> u8 {
@@ -281,14 +275,6 @@ impl<T> Signal<T> {
             Signal::Sync(sig) => (**sig).wait(),
             #[cfg(feature = "async")]
             Signal::Async(_sig) => panic!("async sig: sync wait must not happen"),
-        }
-    }
-
-    pub unsafe fn wait_short(&self) -> u8 {
-        match self {
-            Signal::Sync(_sig) => panic!("sync sig: wait short must not happen"),
-            #[cfg(feature = "async")]
-            Signal::Async(sig) => (**sig).wait_sync_short(),
         }
     }
 
