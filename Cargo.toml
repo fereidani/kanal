@@ -19,7 +19,6 @@ tokio = { version = "1", features =["rt-multi-thread", "test-util", "macros"] }
 crossbeam = "0.8"
 
 [features]
-default = ["async","async_short_sync"]
+default = ["async"]
 async=[]
-async_short_sync=[]
 sync=[]
