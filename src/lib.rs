@@ -16,8 +16,6 @@ pub(crate) mod mutex;
 mod signal;
 pub(crate) mod state;
 
-mod atomic_waker;
-
 use internal::{acquire_internal, ChannelInternal, Internal};
 
 #[cfg(feature = "async")]
