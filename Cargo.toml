@@ -20,6 +20,5 @@ crossbeam = "0.8"
 
 [features]
 async=[]
-sync=[]
 std-mutex=[]
 default = ["async"]
