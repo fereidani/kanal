@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
+use std::task::Waker;
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 //use crate::atomic_waker::AtomicWaker;
-#[cfg(feature = "async")]
-use crate::mutex::Mutex;
+
 use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 
 #[cfg(feature = "async")]
@@ -12,7 +12,7 @@ pub struct AsyncSignal<T> {
     state: State,
     data: *mut T,
     // TODO: find a solution with using Arc, currently without Arc we have Miri errors.
-    waker: std::sync::Arc<WakerStore>,
+    waker: Option<Waker>,
     phantum: PhantomData<Box<T>>,
 }
 
@@ -20,24 +20,11 @@ pub struct AsyncSignal<T> {
 unsafe impl<T> Send for AsyncSignal<T> {}
 
 #[cfg(feature = "async")]
-#[derive(Default)]
-pub struct WakerStore(Mutex<Option<std::task::Waker>>);
-
-#[cfg(feature = "async")]
-impl WakerStore {
-    pub fn register(&self, w: &std::task::Waker) {
-        self.0.lock().replace(w.clone());
-    }
-    pub fn take(&self) -> Option<std::task::Waker> {
-        return self.0.lock().take();
-    }
-}
-
-#[cfg(feature = "async")]
 impl<T> std::future::Future for AsyncSignal<T> {
     type Output = u8;
+    #[inline(always)]
     fn poll(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let v = self.state.value();
@@ -45,7 +32,7 @@ impl<T> std::future::Future for AsyncSignal<T> {
             return std::task::Poll::Ready(v);
         }
         {
-            self.waker.register(cx.waker())
+            self.waker = Some(cx.waker().clone())
         }
         let v = self.state.value();
         if v >= LOCKED {
@@ -98,41 +85,38 @@ impl<T> AsyncSignal<T> {
         if std::mem::size_of::<T>() > 0 {
             *(*this).data = d;
         }
-        let waker_option = (*this).waker.take();
+        let waker = (*this).waker.as_ref().unwrap().clone();
         (*this).state.store(UNLOCKED);
-        if let Some(waker) = waker_option {
-            waker.wake();
-        }
+        waker.wake();
     }
 
     #[inline(always)]
     pub unsafe fn recv(this: *const Self) -> T {
         if std::mem::size_of::<T>() > 0 {
-            let waker_option = (*this).waker.take();
+            let waker = (*this).waker.as_ref().unwrap().clone();
             let r = read_ptr((*this).data);
             (*this).state.store(UNLOCKED);
-            if let Some(waker) = waker_option {
-                waker.wake();
-            }
+            waker.wake();
             r
         } else {
-            let waker_option = (*this).waker.take();
+            let waker = (*this).waker.as_ref().unwrap().clone();
             (*this).state.store(UNLOCKED);
-            if let Some(waker) = waker_option {
-                waker.wake();
-            }
+            waker.wake();
             std::mem::zeroed()
         }
+    }
+
+    #[inline(always)]
+    pub fn register(&mut self, waker: &Waker) {
+        self.waker = Some(waker.clone())
     }
 
     // terminates operation and notifies the waiter , shall not be called more than once
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
-        let waker_option = (*this).waker.take();
+        let waker = (*this).waker.as_ref().unwrap().clone();
         (*this).state.store(TERMINATED);
-        if let Some(waker) = waker_option {
-            waker.wake();
-        }
+        waker.wake();
     }
 
     // waits for signal and returns true if send/recv operation was successful

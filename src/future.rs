@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     future::Future,
     mem::{needs_drop, MaybeUninit},
     pin::Pin,
@@ -8,7 +9,8 @@ use std::{
 use crate::{
     internal::{acquire_internal, Internal},
     signal::AsyncSignal,
-    state, Error,
+    state::{self},
+    Error,
 };
 
 use pin_project_lite::pin_project;
@@ -29,6 +31,22 @@ impl FutureState {
     #[inline(always)]
     fn is_done(&self) -> bool {
         *self == FutureState::Done
+    }
+}
+
+pub struct ReadyFuture<T> {
+    result: Cell<Option<T>>,
+}
+
+impl<T> Future for ReadyFuture<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(
+            self.result
+                .take()
+                .expect("polled after result is already returned"),
+        )
     }
 }
 
@@ -79,6 +97,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     internal
                         .queue
                         .push_back(unsafe { std::ptr::read(this.data.as_mut_ptr()) });
+                    drop(internal);
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(()))
                 } else {
@@ -88,10 +107,9 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     }
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
+                    this.sig.register(cx.waker());
                     // send directly to wait list
                     internal.push_send(this.sig.as_signal());
-                    // register waker, it's not ready, so no need to check the return value
-                    _ = this.sig.poll(cx);
                     drop(internal);
                     Poll::Pending
                 }
@@ -160,6 +178,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         // if there is a sender take its data and push it in queue
                         unsafe { internal.queue.push_back(p.recv()) }
                     }
+                    drop(internal);
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(v))
                 } else if let Some(p) = internal.next_send() {
@@ -173,10 +192,9 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     }
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
+                    this.sig.register(cx.waker());
                     // no active waiter so push to queue
                     internal.push_recv(this.sig.as_signal());
-                    // register waker, it's not ready, so no need to check the return value
-                    _ = this.sig.poll(cx);
                     drop(internal);
                     Poll::Pending
                 }

@@ -36,13 +36,13 @@ impl State {
     #[inline(always)]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
-        if v != LOCKED {
+        if v < LOCKED {
             return v;
         }
         while Instant::now() < until {
             for _ in 0..(1 << 10) {
                 let v = self.v.load(Ordering::SeqCst);
-                if v != LOCKED {
+                if v < LOCKED {
                     return v;
                 }
                 //std::hint::spin_loop();
@@ -60,14 +60,14 @@ impl State {
     #[inline(always)]
     pub fn wait_indefinitely(&self) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
-        if v != LOCKED {
+        if v < LOCKED {
             return v;
         }
         let mut sleep_time: u64 = 1 << 3;
         loop {
             for _ in 0..(1 << 8) {
                 let v = self.v.load(Ordering::SeqCst);
-                if v != LOCKED {
+                if v < LOCKED {
                     return v;
                 }
                 //spin_loop();
@@ -80,6 +80,7 @@ impl State {
             }
         }
     }
+
     /// Unlocks the state and change it to succesfull state
     #[inline(always)]
     pub unsafe fn unlock(&self) -> bool {
