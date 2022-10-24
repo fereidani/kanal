@@ -1,17 +1,13 @@
+use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 use std::marker::PhantomData;
 use std::task::Waker;
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
-//use crate::atomic_waker::AtomicWaker;
-
-use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
-
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
     state: State,
     data: *mut T,
-    // TODO: find a solution with using Arc, currently without Arc we have Miri errors.
     waker: Option<Waker>,
     phantum: PhantomData<Box<T>>,
 }

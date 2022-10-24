@@ -9,8 +9,7 @@ use std::{
 use crate::{
     internal::{acquire_internal, Internal},
     signal::AsyncSignal,
-    state::{self},
-    Error,
+    state, Error,
 };
 
 use pin_project_lite::pin_project;
