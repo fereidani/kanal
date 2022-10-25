@@ -36,7 +36,7 @@ unsafe impl RawMutex for RawMutexLock {
                     //std::hint::spin_loop();
                 }
             } else {
-                // Increase spin cycles by factor of 2, this gives long waiting threads to acquire Mutex faster
+                // Eventual Fairness: Increase spin cycles by factor of 2, this gives better chance to long waiting threads to acquire Mutex
                 if cycles < (1 << 31) {
                     cycles <<= 1;
                 }
