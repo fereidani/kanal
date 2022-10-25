@@ -201,7 +201,7 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
-        let until = Instant::now() + Duration::from_millis(1);
+        let until = Instant::now() + Duration::from_nanos(1 << 18); //about 0.26ms
         let mut v = self.state.wait_unlock_until(until);
 
         if v < LOCKED {
