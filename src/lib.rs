@@ -245,7 +245,8 @@ impl<T> Sender<T> {
         }
         // if the queue is not empty send the data
     }
-    /// Sends data to the channel
+    /// Sends data to the channel with a deadline, if send fails and object will be dropped.
+    /// you can use send_option_timeout if you like to keep object in case of timeout.
     #[inline(always)]
     pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), ErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
