@@ -33,22 +33,6 @@ impl FutureState {
     }
 }
 
-pub struct ReadyFuture<T> {
-    result: Cell<Option<T>>,
-}
-
-impl<T> Future for ReadyFuture<T> {
-    type Output = T;
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(
-            self.result
-                .take()
-                .expect("polled after result is already returned"),
-        )
-    }
-}
-
 pin_project! {
     #[must_use = "futures do nothing unless you .await or poll them"]
     pub struct SendFuture<'a, T> {
