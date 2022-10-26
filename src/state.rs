@@ -57,21 +57,23 @@ impl State {
     }
 
     #[cfg(feature = "async")]
-    #[inline(always)]
     pub fn wait_indefinitely(&self) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
         if v < LOCKED {
             return v;
         }
+        for _ in 0..(1 << 10) {
+            let v = self.v.load(Ordering::SeqCst);
+            if v < LOCKED {
+                return v;
+            }
+            std::thread::yield_now();
+        }
         let mut sleep_time: u64 = 1 << 3;
         loop {
-            for _ in 0..(1 << 8) {
-                let v = self.v.load(Ordering::SeqCst);
-                if v < LOCKED {
-                    return v;
-                }
-                //spin_loop();
-                std::thread::yield_now();
+            let v = self.v.load(Ordering::SeqCst);
+            if v < LOCKED {
+                return v;
             }
             std::thread::sleep(Duration::from_nanos(sleep_time));
             // increase sleep_time gradually to 262 microseconds
