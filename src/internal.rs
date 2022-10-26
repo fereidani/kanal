@@ -89,7 +89,6 @@ impl<T> ChannelInternal<T> {
         self.recv_wait.push_back(s);
     }
 
-    #[inline(always)]
     pub fn cancel_send_signal(&mut self, sig: Signal<T>) -> bool {
         for (i, send) in self.send_wait.iter().enumerate() {
             if sig == *send {
@@ -100,7 +99,6 @@ impl<T> ChannelInternal<T> {
         false
     }
 
-    #[inline(always)]
     pub fn cancel_recv_signal(&mut self, sig: Signal<T>) -> bool {
         for (i, recv) in self.recv_wait.iter().enumerate() {
             if sig == *recv {
