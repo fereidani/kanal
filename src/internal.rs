@@ -27,7 +27,7 @@ pub struct ChannelInternal<T> {
     pub queue: VecDeque<T>,
     /// Receive waitlist for when the channel queue is empty or zero capacity
     pub recv_wait: VecDeque<Signal<T>>,
-    /// The sender wait list for when the channel queue is full or zero capacity
+    /// The sender waitlist for when the channel queue is full or zero capacity
     pub send_wait: VecDeque<Signal<T>>,
     /// The capacity of the channel buffer
     pub capacity: usize,
