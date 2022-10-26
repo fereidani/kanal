@@ -116,7 +116,6 @@ impl<T> AsyncSignal<T> {
     }
 
     // waits for signal and returns true if send/recv operation was successful
-    #[inline(always)]
     pub fn wait_indefinitely(&self) -> u8 {
         self.state.wait_indefinitely()
     }
