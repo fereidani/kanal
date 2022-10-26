@@ -1,5 +1,4 @@
 use std::{
-    cell::Cell,
     future::Future,
     mem::{needs_drop, MaybeUninit},
     pin::Pin,
@@ -47,7 +46,7 @@ pin_project! {
             if !this.state.is_done() && this.state.is_waiting() {
                 let mut internal = acquire_internal(this.internal);
                 if !internal.cancel_send_signal(this.sig.as_signal()){
-                    // someone got signal ownership, should wait until response
+                    // a receiver got signal ownership, should wait until response
                     this.sig.wait_indefinitely();
                 }else if needs_drop::<T>(){
                     unsafe{this.data.assume_init_drop()};
