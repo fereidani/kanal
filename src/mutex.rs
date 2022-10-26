@@ -36,7 +36,7 @@ unsafe impl RawMutex for RawMutexLock {
                     //std::hint::spin_loop();
                 }
             } else {
-                // Eventual Fairness: Increase spin cycles by factor of 2, this gives better chance to long waiting threads to acquire Mutex
+                // Eventual Fairness: Increase spin cycles by a factor of 2, this gives better chance to long waiting threads to acquire Mutex
                 if cycles < (1 << 31) {
                     cycles <<= 1;
                 }
@@ -49,7 +49,7 @@ unsafe impl RawMutex for RawMutexLock {
                 }
             }
             std::thread::sleep(Duration::from_nanos(sleep_time as u64));
-            // Increase backoff time by factor of 2 until we reach maximum backoff time
+            // Increase backoff time by a factor of 2 until we reach maximum backoff time
             if sleep_time < MAX_BACKOFF_TIME {
                 sleep_time <<= 1
             }
@@ -68,7 +68,7 @@ unsafe impl RawMutex for RawMutexLock {
         self.locked.store(false, Ordering::Release);
     }
 }
-
+#[allow(dead_code)]
 pub type Mutex<T> = lock_api::Mutex<RawMutexLock, T>;
 #[cfg(not(feature = "std-mutex"))]
 pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutexLock, T>;

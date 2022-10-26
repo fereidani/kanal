@@ -10,6 +10,7 @@ use crate::signal::Signal;
 
 pub type Internal<T> = Arc<Mutex<ChannelInternal<T>>>;
 
+/// Acquire mutex guard on channel internal for use in channel operations
 #[inline(always)]
 pub fn acquire_internal<T>(internal: &'_ Internal<T>) -> MutexGuard<'_, ChannelInternal<T>> {
     #[cfg(not(feature = "std-mutex"))]
@@ -18,22 +19,26 @@ pub fn acquire_internal<T>(internal: &'_ Internal<T>) -> MutexGuard<'_, ChannelI
     internal.lock().unwrap()
 }
 
-/// Internal of channel that holds queues, wait lists and general state of channel,
+/// Internal of the channel that holds queues, waitlists, and general state of the channel,
 ///   it's shared among senders and receivers with an atomic counter and a mutex
 pub struct ChannelInternal<T> {
     // KEEP THE ORDER
+    /// Channel queue to save buffered objects
     pub queue: VecDeque<T>,
-    // receiver will wait until queue becomes full
+    /// Receive waitlist for when the channel queue is empty or zero capacity
     pub recv_wait: VecDeque<Signal<T>>,
-    // sender will wait until queue becomes empty
+    /// The sender wait list for when the channel queue is full or zero capacity
     pub send_wait: VecDeque<Signal<T>>,
+    /// The capacity of the channel buffer
     pub capacity: usize,
+    /// Count of alive receivers
     pub recv_count: u32,
+    /// Count of alive senders
     pub send_count: u32,
 }
 
 impl<T> ChannelInternal<T> {
-    /// Returns a channel internal with required capacity
+    /// Returns a channel internal with the required capacity
     pub fn new(bounded: bool, capacity: usize) -> Internal<T> {
         let mut abstract_capacity = capacity;
         if !bounded {
@@ -53,42 +58,45 @@ impl<T> ChannelInternal<T> {
         Arc::new(Mutex::from(ret))
     }
 
-    /// Terminates remainings signals in queue to notify listeners about closing of channel
+    /// Terminates remainings signals in the queue to notify listeners about the closing of the channel
     pub fn terminate_signals(&mut self) {
         for v in &self.send_wait {
+            // Safety: it's safe to terminate owned signal once
             unsafe { v.terminate() }
         }
         self.send_wait.clear();
         for v in &self.recv_wait {
+            // Safety: it's safe to terminate owned signal once
             unsafe { v.terminate() }
         }
         self.recv_wait.clear();
     }
 
-    /// Returns next signal for sender from wait list
+    /// Returns next signal for sender from the waitlist
     #[inline(always)]
     pub fn next_send(&mut self) -> Option<Signal<T>> {
         self.send_wait.pop_front()
     }
 
-    /// Adds new sender signal to wait list
+    /// Adds new sender signal to the waitlist
     #[inline(always)]
     pub fn push_send(&mut self, s: Signal<T>) {
         self.send_wait.push_back(s);
     }
 
-    /// Returns next signal for receiver in wait list
+    /// Returns the next signal for the receiver in the waitlist
     #[inline(always)]
     pub fn next_recv(&mut self) -> Option<Signal<T>> {
         self.recv_wait.pop_front()
     }
 
-    /// Adds new receiver signal to wait list
+    /// Adds new receiver signal to the waitlist
     #[inline(always)]
     pub fn push_recv(&mut self, s: Signal<T>) {
         self.recv_wait.push_back(s);
     }
 
+    /// Tries to remove the send signal from the waitlist, returns true if the operation was successful
     pub fn cancel_send_signal(&mut self, sig: Signal<T>) -> bool {
         for (i, send) in self.send_wait.iter().enumerate() {
             if sig == *send {
@@ -99,6 +107,7 @@ impl<T> ChannelInternal<T> {
         false
     }
 
+    /// Tries to remove the received signal from the waitlist, returns true if the operation was successful
     pub fn cancel_recv_signal(&mut self, sig: Signal<T>) -> bool {
         for (i, recv) in self.recv_wait.iter().enumerate() {
             if sig == *recv {
@@ -110,9 +119,10 @@ impl<T> ChannelInternal<T> {
     }
 }
 
+/// Drop implementation for the channel internal, it will signal all waiters about the closing of the channel with a termination signal
 impl<T> Drop for ChannelInternal<T> {
     fn drop(&mut self) {
-        // in case of drop we should notify those who are waiting in wait lists.
+        // in case of a drop, we should notify those who are waiting on the waitlist
         self.terminate_signals()
     }
 }

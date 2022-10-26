@@ -39,7 +39,7 @@ impl<T> std::future::Future for AsyncSignal<T> {
     }
 }
 
-/// read the pointer value for types with size bigger than zero, in case of zero sized types returns std::mem::zeroed
+/// Reads the pointer value for types with a size bigger than zero, in the case of zero-sized types returns std::mem::zeroed
 #[inline(always)]
 unsafe fn read_ptr<T>(ptr: *const T) -> T {
     if std::mem::size_of::<T>() > 0 {
@@ -52,7 +52,7 @@ unsafe fn read_ptr<T>(ptr: *const T) -> T {
 
 #[cfg(feature = "async")]
 impl<T> AsyncSignal<T> {
-    // signal to send data to a writer
+    /// Signal to send data to a writer
     #[inline(always)]
     pub fn new() -> Self {
         let e = Self {
@@ -65,17 +65,20 @@ impl<T> AsyncSignal<T> {
         e
     }
 
+    /// Set pointer to data for receiving or sending
     #[inline(always)]
-    pub fn set_ptr(&mut self, data: *mut T) {
-        self.data = data;
+    pub fn set_ptr(&mut self, data_ptr: *mut T) {
+        self.data = data_ptr;
     }
 
-    // convert async signal to common signal that works with channel internal
+    /// Convert async signal to common signal that works with channel internal
     #[inline(always)]
     pub fn as_signal(&self) -> Signal<T> {
         Signal::Async(self as *const Self)
     }
 
+    /// Sends object to the signal
+    /// Safety: it's only safe to call on receive signals that are not terminated
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
@@ -86,6 +89,8 @@ impl<T> AsyncSignal<T> {
         waker.wake();
     }
 
+    /// Receives object from signal
+    /// Safety: it's only safe to call on send signals that are not terminated
     #[inline(always)]
     pub unsafe fn recv(this: *const Self) -> T {
         if std::mem::size_of::<T>() > 0 {
@@ -102,12 +107,14 @@ impl<T> AsyncSignal<T> {
         }
     }
 
+    /// Register waker for async
     #[inline(always)]
     pub fn register(&mut self, waker: &Waker) {
         self.waker = Some(waker.clone())
     }
 
-    // terminates operation and notifies the waiter , shall not be called more than once
+    /// Terminates operation and notifies the waiter , shall not be called more than once
+    /// Safety: it's only safe to be called only once on send/receive signals that are not finished or terminated
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
         let waker = (*this).waker.as_ref().unwrap().clone();
@@ -115,7 +122,7 @@ impl<T> AsyncSignal<T> {
         waker.wake();
     }
 
-    // waits for signal and returns true if send/recv operation was successful
+    /// Waits for signal and returns true if send/recv operation was successful
     pub fn wait_indefinitely(&self) -> u8 {
         self.state.wait_indefinitely()
     }
@@ -133,6 +140,7 @@ unsafe impl<T> Sync for SyncSignal<T> {}
 
 #[allow(dead_code)]
 impl<T> SyncSignal<T> {
+    /// Returns new sync signal for the provided thread
     #[inline(always)]
     pub fn new(ptr: *mut T, thread: Thread) -> Self {
         let e = SyncSignal {
@@ -146,36 +154,39 @@ impl<T> SyncSignal<T> {
         e
     }
 
-    // convert sync signal to common signal that works with channel internal
+    /// Convert sync signal to common signal that works with channel internal
     pub fn as_signal(&self) -> Signal<T> {
         Signal::Sync(self as *const Self)
     }
 
-    // writes data to pointer, shall not be called more than once
-    // has to be done through a pointer because by the end of this scope
-    // the object might have been destroyes by the owning receiver
+    /// Writes data to the pointer, shall not be called more than once
+    /// has to be done through a pointer because by the end of this scope
+    /// the object might have been destroyed by the owning receiver
+    /// Safety: it's only safe to call on receive signals that are not terminated
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
             std::ptr::write((*this).ptr, d);
         }
         if !(*this).state.unlock() {
-            // Clone the thread because this.thread might be destroyed
-            // sometime during unpark when the other thread wakes up
+            // Clone the thread because this.thread might get destroyed after force_unlock
+            // it's possible during unpark the other thread wakes up faster and drops the thread object
             let thread = (*this).thread.clone();
             (*this).state.force_unlock();
             thread.unpark();
         }
     }
 
-    // read data from pointer, shall not be called more than once
-    // has to be done through a pointer because by the end of this scope
-    // the object might have been destroyed by the owning receiver
+    /// Read data from the pointer, shall not be called more than once
+    /// has to be done through a pointer because by the end of this scope
+    /// the object might have been destroyed by the owning receiver
+    /// Safety: it's only safe to call on send signals that are not terminated
     #[inline(always)]
     pub unsafe fn recv(this: *const Self) -> T {
         let d = read_ptr((*this).ptr);
         if !(*this).state.unlock() {
-            // Same as send
+            // Clone the thread because this.thread might get destroyed after force_unlock
+            // it's possible during unpark the other thread wakes up faster and drops the thread object
             let thread = (*this).thread.clone();
             (*this).state.force_unlock();
             thread.unpark();
@@ -183,9 +194,10 @@ impl<T> SyncSignal<T> {
         d
     }
 
-    // terminates operation and notifies the waiter , shall not be called more than once
-    // has to be done through a pointer because by the end of this scope
-    // the object might have been destroyed by the owner
+    /// Terminates operation and notifies the waiter , shall not be called more than once
+    /// has to be done through a pointer because by the end of this scope
+    /// the object might have been destroyed by the owner
+    /// Safety: it's only safe to be called only once on send/receive signals that are not finished or terminatedv
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
         if !(*this).state.terminate() {
@@ -196,7 +208,7 @@ impl<T> SyncSignal<T> {
         }
     }
 
-    // waits for signal and returns true if send/recv operation was successful
+    /// Waits for signal and returns true if send/recv operation was successful
     #[inline(always)]
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
@@ -219,35 +231,41 @@ impl<T> SyncSignal<T> {
         v == UNLOCKED
     }
 
-    // waits for signal and returns true if send/recv operation was successful
+    /// Waits for signal and returns true if send/recv operation was successful
     #[inline(always)]
     pub fn wait_timeout(&self, until: Instant) -> bool {
         let v = self.state.wait_unlock_until(until);
         v == UNLOCKED
     }
 
+    /// Returns whether the state of the signal is still in locked modes
     pub fn is_locked(&self) -> bool {
         self.state.value() >= LOCKED
     }
 
+    /// Returns whether the signal is terminated by the terminate() function or not
     #[inline(always)]
     pub fn is_terminated(&self) -> bool {
         self.state.value() == TERMINATED
     }
 }
 
-#[derive(Clone, Copy)]
+/// Signal enum encapsulates both SyncSignal and AsyncSignal to enable them to operate in the same context
+#[derive(Clone, Copy, Debug)]
 pub enum Signal<T> {
     Sync(*const SyncSignal<T>),
     #[cfg(feature = "async")]
     Async(*const AsyncSignal<T>),
 }
-
+// Safety: if T is Send/Sync, the Signal<T> is safe to move
 unsafe impl<T> Sync for Signal<T> {}
+// Safety: if T is Send/Sync, the Signal<T> is safe to move
 unsafe impl<T> Send for Signal<T> {}
 
 #[allow(dead_code)]
 impl<T> Signal<T> {
+    /// Waits for the signal event in sync mode,
+    /// Safety: it's only safe to wait for signals that are not terminated or finished
     pub unsafe fn wait(&self) -> bool {
         match self {
             Signal::Sync(sig) => (**sig).wait(),
@@ -256,6 +274,8 @@ impl<T> Signal<T> {
         }
     }
 
+    /// Sends object to receive signal
+    /// Safety: it's only safe to be called only once on the receive signals that are not terminated
     pub unsafe fn send(self, d: T) {
         match self {
             Signal::Sync(sig) => SyncSignal::send(sig, d),
@@ -264,6 +284,8 @@ impl<T> Signal<T> {
         }
     }
 
+    /// Receives object from send signal
+    /// Safety: it's only safe to be called only once on send signals that are not terminated
     pub unsafe fn recv(self) -> T {
         match self {
             Signal::Sync(sig) => SyncSignal::recv(sig),
@@ -272,6 +294,8 @@ impl<T> Signal<T> {
         }
     }
 
+    /// Terminates the signal and notifies its waiter
+    /// Safety: it's only safe to be called only once on send/receive signals that are not finished or terminated
     pub unsafe fn terminate(&self) {
         match self {
             Signal::Sync(sig) => SyncSignal::terminate(*sig),
@@ -282,6 +306,7 @@ impl<T> Signal<T> {
 }
 
 impl<T> PartialEq for Signal<T> {
+    /// Returns whether the signal pointer is the same as other
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Sync(l0), Self::Sync(r0)) => l0 == r0,

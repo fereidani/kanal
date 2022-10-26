@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-/// State keeps state of signals in both sync and async to make eventing for senders and receivers possible
+/// The state keeps the state of signals in both sync and async to make eventing for senders and receivers possible
 pub struct State {
     v: AtomicU8,
 }
@@ -21,7 +21,7 @@ pub const TERMINATED: u8 = 1;
 pub const LOCKED: u8 = 2;
 pub const LOCKED_STARVATION: u8 = 3;
 impl State {
-    /// Returns current value of State with recommended Ordering
+    /// Returns the current value of State with recommended Ordering
     #[inline(always)]
     pub fn value(&self) -> u8 {
         self.v.load(Ordering::SeqCst)
@@ -33,6 +33,8 @@ impl State {
         self.v.store(v, Ordering::SeqCst)
     }
 
+    /// Waits synchronously without putting the thread to sleep until the instant time is reached
+    /// this function may return with latency after instant time because of spin loop implementation
     #[inline(always)]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
@@ -56,6 +58,7 @@ impl State {
         self.v.load(Ordering::SeqCst)
     }
 
+    /// Waits synchronously for the signal in sync mode, it should not be used anywhere except a drop of async future
     #[cfg(feature = "async")]
     pub fn wait_indefinitely(&self) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
@@ -83,7 +86,7 @@ impl State {
         }
     }
 
-    /// Unlocks the state and change it to succesfull state
+    /// Unlocks the state and changes it to a successful state
     #[inline(always)]
     pub unsafe fn unlock(&self) -> bool {
         self.v
@@ -91,12 +94,13 @@ impl State {
             .is_ok()
     }
 
+    /// Force unlocks the state without checking for the current state
     #[inline(always)]
     pub unsafe fn force_unlock(&self) {
         self.store(UNLOCKED)
     }
 
-    /// Unlocks the state and change it to failed state
+    /// Unlocks the state and changes it to the failed state
     #[inline(always)]
     pub unsafe fn terminate(&self) -> bool {
         self.v
@@ -104,12 +108,13 @@ impl State {
             .is_ok()
     }
 
+    /// Force terminates the signal, without checking for the current state of the signal
     #[inline(always)]
     pub unsafe fn force_terminate(&self) {
         self.store(TERMINATED)
     }
 
-    /// acquire lock for current thread from state, should not be used on any part of async because thread that acquire
+    /// Acquire lock for the current thread from the state, should not be used on any part of async because the thread that acquires
     ///  a lock should not go to sleep and we can't guarantee that in async
     #[inline(always)]
     pub fn lock(&self) -> bool {
@@ -118,7 +123,7 @@ impl State {
             .is_ok()
     }
 
-    /// tries to upgrade the lock to starvation mode
+    /// Tries to upgrade the lock to starvation mode
     #[inline(always)]
     pub fn upgrade_lock(&self) -> bool {
         self.v

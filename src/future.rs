@@ -33,6 +33,8 @@ impl FutureState {
 }
 
 pin_project! {
+    /// Send future to send an object to the channel asynchronously
+    /// It must be polled to perform send action
     #[must_use = "futures do nothing unless you .await or poll them"]
     pub struct SendFuture<'a, T> {
         pub(crate) state: FutureState,
@@ -46,7 +48,7 @@ pin_project! {
             if !this.state.is_done() && this.state.is_waiting() {
                 let mut internal = acquire_internal(this.internal);
                 if !internal.cancel_send_signal(this.sig.as_signal()){
-                    // a receiver got signal ownership, should wait until response
+                    // a receiver got signal ownership, should wait until the response
                     this.sig.wait_indefinitely();
                 }else if needs_drop::<T>(){
                     unsafe{this.data.assume_init_drop()};
@@ -90,7 +92,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
                     this.sig.register(cx.waker());
-                    // send directly to wait list
+                    // send directly to the waitlist
                     internal.push_send(this.sig.as_signal());
                     drop(internal);
                     Poll::Pending
@@ -117,6 +119,8 @@ impl<'a, T> Future for SendFuture<'a, T> {
 }
 
 pin_project! {
+    /// Receive future to receive an object from the channel asynchronously
+    /// It must be polled to perform receive action
     #[must_use = "futures do nothing unless you .await or poll them"]
     pub struct ReceiveFuture<'a, T> {
         pub(crate) state: FutureState,
@@ -130,9 +134,9 @@ pin_project! {
             if !this.state.is_done() && this.state.is_waiting() {
                 let mut internal = acquire_internal(this.internal);
                 if !internal.cancel_recv_signal(this.sig.as_signal()){
-                    // someone got signal ownership, should wait until response
+                    // someone got signal ownership, should wait until the response
                     this.sig.wait_indefinitely();
-                    // got ownership of data that is not gonna be used ever again, so drop it
+                    // got ownership of data that is not going to be used ever again, so drop it
                     if needs_drop::<T>(){
                         unsafe { std::ptr::drop_in_place(this.data.as_mut_ptr()) }
                     }
@@ -157,7 +161,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                 }
                 if let Some(v) = internal.queue.pop_front() {
                     if let Some(p) = internal.next_send() {
-                        // if there is a sender take its data and push it in queue
+                        // if there is a sender take its data and push it into the queue
                         unsafe { internal.queue.push_back(p.recv()) }
                     }
                     drop(internal);
@@ -175,7 +179,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
                     this.sig.register(cx.waker());
-                    // no active waiter so push to queue
+                    // no active waiter so push to the queue
                     internal.push_recv(this.sig.as_signal());
                     drop(internal);
                     Poll::Pending
