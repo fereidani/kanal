@@ -552,7 +552,7 @@ impl<T> Sender<T> {
         }
         // if the queue is not empty send the data
     }
-
+    shared_send_impl!();
     /// Clones Sender as the async version of it and returns it
     #[cfg(feature = "async")]
     pub fn clone_async(&self) -> AsyncSender<T> {
@@ -569,7 +569,6 @@ impl<T> Sender<T> {
         acquire_internal(&self.internal).recv_count == 0
     }
     shared_impl!();
-    shared_send_impl!();
 }
 
 #[cfg(feature = "async")]
@@ -584,6 +583,7 @@ impl<T> AsyncSender<T> {
             data: MaybeUninit::new(data),
         }
     }
+    shared_send_impl!();
     /// Clones async sender as sync version of it
     pub fn clone_sync(&self) -> Sender<T> {
         let mut internal = acquire_internal(&self.internal);
@@ -600,7 +600,6 @@ impl<T> AsyncSender<T> {
         acquire_internal(&self.internal).recv_count == 0
     }
     shared_impl!();
-    shared_send_impl!();
 }
 
 /// Receiving side of the channel in sync mode
@@ -734,6 +733,7 @@ impl<T> Receiver<T> {
         }
         // if the queue is not empty send the data
     }
+    shared_recv_impl!();
     /// Returns if the send part of the channel is disconnected
     pub fn is_disconnected(&self) -> bool {
         acquire_internal(&self.internal).send_count == 0
@@ -750,7 +750,6 @@ impl<T> Receiver<T> {
         }
     }
     shared_impl!();
-    shared_recv_impl!();
 }
 
 impl<T> Iterator for Receiver<T> {
@@ -814,6 +813,7 @@ impl<T> AsyncReceiver<T> {
             internal: self.internal.clone(),
         }
     }
+    shared_recv_impl!();
     /// Returns, whether the send side of the channel, is closed or not
     /// # Examples
     ///
@@ -830,7 +830,6 @@ impl<T> AsyncReceiver<T> {
         acquire_internal(&self.internal).send_count == 0
     }
     shared_impl!();
-    shared_recv_impl!();
 }
 
 impl<T> Drop for Receiver<T> {
@@ -957,7 +956,7 @@ const UNBOUNDED_STARTING_SIZE: usize = 2048;
 /// ```
 /// use std::thread::spawn;
 ///
-/// let (s, r) = kanal::unbounded(); // for channel with zero size queue, this channel always block until successful send/recv
+/// let (s, r) = kanal::unbounded(); // for channel with unbounded size queue, this channel never blocks on send
 ///
 /// // spawn 8 threads, that will send 100 numbers to the channel reader
 /// for i in 0..8{
