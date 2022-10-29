@@ -19,6 +19,17 @@ pub fn acquire_internal<T>(internal: &'_ Internal<T>) -> MutexGuard<'_, ChannelI
     internal.lock().unwrap()
 }
 
+/// Tries to acquire mutex guard on channel internal for use in channel operations
+#[inline(always)]
+pub fn try_acquire_internal<T>(
+    internal: &'_ Internal<T>,
+) -> Option<MutexGuard<'_, ChannelInternal<T>>> {
+    #[cfg(not(feature = "std-mutex"))]
+    return internal.try_lock();
+    #[cfg(feature = "std-mutex")]
+    internal.try_lock().ok()
+}
+
 /// Internal of the channel that holds queues, waitlists, and general state of the channel,
 ///   it's shared among senders and receivers with an atomic counter and a mutex
 pub struct ChannelInternal<T> {
