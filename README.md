@@ -44,8 +44,8 @@ Machine: `AMD Ryzen Threadripper 2950X 16-Core Processor`<br />
 Rust: `rustc rustc 1.64.0`<br />
 Go: `go version go1.19.2 linux/amd64`<br />
 OS (`uname -a`): `Linux 5.13.0-35-generic #40~20.04.1-Ubuntu SMP Mon Mar 7 09:18:32 UTC 2022 x86_64`<br />
-Date: Oct 25, 2022
+Date: Oct 30, 2022
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
-![Benchmarks](https://i.imgur.com/ozpHHIx.png)
+![Benchmarks](https://i.imgur.com/eTMeBK2.png)
