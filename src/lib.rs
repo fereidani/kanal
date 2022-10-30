@@ -80,24 +80,26 @@ impl fmt::Display for ErrorTimeout {
     }
 }
 
-/// Sending side of the channel in sync mode
+/// Sending side of the channel in sync mode.
+/// Senders can be cloned and produce senders to operate in both sync and async modes.
+/// # Examples
 ///
-/// Senders can be cloned and produce senders to operate in both sync and async modes
-/// `
-/// let sender_clone = s.clone();
-/// let sender_clone_async = s.clone_async();
-/// `
+/// ```
+/// let (sender, _r) = kanal::bounded::<u64>(0);
+/// let sync_sender=sender.clone_async();
+/// ```
 pub struct Sender<T> {
     internal: Internal<T>,
 }
 
-/// Sending side of the channel in async mode
+/// Sending side of the channel in async mode.
+/// Senders can be cloned and produce senders to operate in both sync and async modes.
+/// # Examples
 ///
-/// Senders can be cloned and produce senders to operate in both sync and async modes
-/// `
-/// let sender_clone = s.clone();
-/// let sender_clone_sync = s.clone_sync();
-/// `
+/// ```
+/// let (sender, _r) = kanal::bounded_async::<u64>(0);
+/// let sync_sender=sender.clone_sync();
+/// ```
 #[cfg(feature = "async")]
 pub struct AsyncSender<T> {
     internal: Internal<T>,
@@ -168,31 +170,95 @@ impl<T> Debug for AsyncSender<T> {
 macro_rules! shared_impl {
     () => {
         /// Returns whether the channel is bounded or not
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::bounded::<u64>(0);
+        /// assert_eq!(s.is_bounded(),true);
+        /// assert_eq!(r.is_bounded(),true);
+        /// ```
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// assert_eq!(s.is_bounded(),false);
+        /// assert_eq!(r.is_bounded(),false);
+        /// ```
         pub fn is_bounded(&self) -> bool {
             acquire_internal(&self.internal).capacity != usize::MAX
         }
         /// Returns length of the queue
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// assert_eq!(s.len(),0);
+        /// assert_eq!(r.len(),0);
+        /// s.send(10);
+        /// assert_eq!(s.len(),1);
+        /// assert_eq!(r.len(),1);
+        /// ```
         pub fn len(&self) -> usize {
             acquire_internal(&self.internal).queue.len()
         }
         /// Returns whether the channel queue is empty or not
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// assert_eq!(s.is_empty(),true);
+        /// assert_eq!(r.is_empty(),true);
+        /// ```
         pub fn is_empty(&self) -> bool {
             acquire_internal(&self.internal).queue.is_empty()
         }
         /// Returns capacity of channel (not the queue)
         /// for unbounded channels, it will return usize::MAX
-        pub fn capacity(&mut self) -> usize {
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::bounded::<u64>(0);
+        /// assert_eq!(s.capacity(),0);
+        /// assert_eq!(r.capacity(),0);
+        /// ```
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// assert_eq!(s.capacity(),usize::MAX);
+        /// assert_eq!(r.capacity(),usize::MAX);
+        /// ```
+        pub fn capacity(&self) -> usize {
             acquire_internal(&self.internal).capacity
         }
         /// Returns count of alive receiver instances of the channel
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// let receiver_clone=r.clone();
+        /// assert_eq!(r.receiver_count(),2);
+        /// ```
         pub fn receiver_count(&self) -> u32 {
             acquire_internal(&self.internal).recv_count
         }
         /// Returns count of alive sender instances of the channel
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// let sender_clone=s.clone();
+        /// assert_eq!(r.sender_count(),2);
+        /// ```
         pub fn sender_count(&self) -> u32 {
             acquire_internal(&self.internal).send_count
         }
         /// Closes the channel completely on both sides and terminates waiting signals
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// // closes channel on both sides and has same effect as r.close();
+        /// s.close();
+        /// assert_eq!(r.is_closed(),true);
+        /// assert_eq!(s.is_closed(),true);
+        /// ```
         pub fn close(&self) -> bool {
             let mut internal = acquire_internal(&self.internal);
             if internal.recv_count == 0 && internal.send_count == 0 {
@@ -205,7 +271,16 @@ macro_rules! shared_impl {
             internal.recv_wait.clear();
             true
         }
-        /// Returns whether the channel is closed or not
+        /// Returns whether the channel is closed on both side of send and receive or not
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// // closes channel on both sides and has same effect as r.close();
+        /// s.close();
+        /// assert_eq!(r.is_closed(),true);
+        /// assert_eq!(s.is_closed(),true);
+        /// ```
         pub fn is_closed(&self) -> bool {
             let internal = acquire_internal(&self.internal);
             internal.send_count == 0 && internal.recv_count == 0
@@ -218,6 +293,21 @@ macro_rules! shared_send_impl {
         /// Tries sending to the channel without waiting on the waitlist, if send fails then the object will be dropped.
         /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
         /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.
+        /// # Examples
+        ///
+        /// ```
+        /// # use std::thread::spawn;
+        /// let (s, r) = kanal::bounded(0);
+        /// spawn( move || {
+        ///     loop{
+        ///         if s.try_send(1).unwrap(){
+        ///             break;
+        ///         }
+        ///     }
+        /// });
+        /// assert_eq!(r.recv()?,1);
+        /// # anyhow::Ok(())
+        /// ```
         #[inline(always)]
         pub fn try_send(&self, data: T) -> Result<bool, Error> {
             let mut internal = acquire_internal(&self.internal);
@@ -241,7 +331,23 @@ macro_rules! shared_send_impl {
 
         /// Tries sending to the channel without waiting on the waitlist, if send fails then the object will be dropped.
         /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
-        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.
+        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.\
+        /// # Examples
+        ///
+        /// ```
+        /// # use std::thread::spawn;
+        /// let (s, r) = kanal::bounded(0);
+        /// spawn( move || {
+        ///     let mut opt=Some(1);
+        ///     loop{
+        ///         if s.try_send_option(&mut opt).unwrap(){
+        ///             break;
+        ///         }
+        ///     }
+        /// });
+        /// assert_eq!(r.recv()?,1);
+        /// # anyhow::Ok(())
+        /// ```
         #[inline(always)]
         pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, Error> {
             let mut internal = acquire_internal(&self.internal);
@@ -265,6 +371,22 @@ macro_rules! shared_send_impl {
 
         /// Tries sending to the channel without waiting on the waitlist or for the internal mutex, if send fails then the object will be dropped.
         /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
+        /// Do not use this function unless you know exactly what you are doing.
+        /// # Examples
+        ///
+        /// ```
+        /// # use std::thread::spawn;
+        /// let (s, r) = kanal::bounded(0);
+        /// spawn( move || {
+        ///     loop{
+        ///         if s.try_send_realtime(1).unwrap(){
+        ///             break;
+        ///         }
+        ///     }
+        /// });
+        /// assert_eq!(r.recv()?,1);
+        /// # anyhow::Ok(())
+        /// ```
         #[inline(always)]
         pub fn try_send_realtime(&self, data: T) -> Result<bool, Error> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
@@ -290,6 +412,23 @@ macro_rules! shared_send_impl {
         /// Tries sending to the channel without waiting on the waitlist or channel internal lock.
         /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
         /// This function will `panic` on successfull send attempt of `None` data.
+        /// Do not use this function unless you know exactly what you are doing.
+        /// # Examples
+        ///
+        /// ```
+        /// # use std::thread::spawn;
+        /// let (s, r) = kanal::bounded(0);
+        /// spawn( move || {
+        ///     let mut opt=Some(1);
+        ///     loop{
+        ///         if s.try_send_option_realtime(&mut opt).unwrap(){
+        ///             break;
+        ///         }
+        ///     }
+        /// });
+        /// assert_eq!(r.recv()?,1);
+        /// # anyhow::Ok(())
+        /// ```
         #[inline(always)]
         pub fn try_send_option_realtime(&self, data: &mut Option<T>) -> Result<bool, Error> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
@@ -311,6 +450,20 @@ macro_rules! shared_send_impl {
             }
             Ok(false)
         }
+
+        /// Returns whether the receive side of the channel is closed or not
+        /// # Examples
+        ///
+        /// ```
+        /// # use tokio::{spawn as co};
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// drop(r); // drop receiver and disconnect the receive side from the channel
+        /// assert_eq!(s.is_disconnected(),true);
+        /// # anyhow::Ok(())
+        /// ```
+        pub fn is_disconnected(&self) -> bool {
+            acquire_internal(&self.internal).recv_count == 0
+        }
     };
 }
 
@@ -322,11 +475,10 @@ macro_rules! shared_recv_impl {
         /// # Examples
         ///
         /// ```
-        /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-        /// # use tokio::{spawn as co};
-        /// # let (s, r) = kanal::bounded_async(0);
-        /// # co(async move {
-        /// #      s.send("Buddy").await?;
+        /// # use std::thread::spawn;
+        /// # let (s, r) = kanal::bounded(0);
+        /// # spawn(move || {
+        /// #      s.send("Buddy")?;
         /// #      anyhow::Ok(())
         /// # });
         /// loop {
@@ -336,7 +488,6 @@ macro_rules! shared_recv_impl {
         ///     }
         /// }
         /// # anyhow::Ok(())
-        /// # });
         /// ```
         #[inline(always)]
         pub fn try_recv(&self) -> Result<Option<T>, Error> {
@@ -353,6 +504,7 @@ macro_rules! shared_recv_impl {
                 return Ok(Some(v));
             } else if let Some(p) = internal.next_send() {
                 // Safety: it's safe to receive from owned signal once
+                drop(internal);
                 return unsafe { Ok(Some(p.recv())) };
             }
             if internal.send_count == 0 {
@@ -362,15 +514,15 @@ macro_rules! shared_recv_impl {
             // if the queue is not empty send the data
         }
         /// Tries receiving from the channel without waiting on the waitlist or waiting for channel internal lock.
-        /// It returns `Ok(Some(T))` in case of successful operation and `Ok(None)` for a failed one, or error in case that channel is closed
+        /// It returns `Ok(Some(T))` in case of successful operation and `Ok(None)` for a failed one, or error in case that channel is closed.
+        /// Do not use this function unless you know exactly what you are doing.
         /// # Examples
         ///
         /// ```
-        /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-        /// # use tokio::{spawn as co};
-        /// # let (s, r) = kanal::bounded_async(0);
-        /// # co(async move {
-        /// #      s.send("Buddy").await?;
+        /// # use std::thread::spawn;
+        /// # let (s, r) = kanal::bounded(0);
+        /// # spawn(move || {
+        /// #      s.send("Buddy")?;
         /// #      anyhow::Ok(())
         /// # });
         /// loop {
@@ -380,7 +532,6 @@ macro_rules! shared_recv_impl {
         ///     }
         /// }
         /// # anyhow::Ok(())
-        /// # });
         /// ```
         #[inline(always)]
         pub fn try_recv_realtime(&self) -> Result<Option<T>, Error> {
@@ -397,6 +548,7 @@ macro_rules! shared_recv_impl {
                     return Ok(Some(v));
                 } else if let Some(p) = internal.next_send() {
                     // Safety: it's safe to receive from owned signal once
+                    drop(internal);
                     return unsafe { Ok(Some(p.recv())) };
                 }
                 if internal.send_count == 0 {
@@ -405,11 +557,40 @@ macro_rules! shared_recv_impl {
             }
             Ok(None)
         }
+
+        /// Returns, whether the send side of the channel, is closed or not
+        /// # Examples
+        ///
+        /// ```
+        /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+        /// # use tokio::{spawn as co};
+        /// let (s, r) = kanal::unbounded_async::<u64>();
+        /// drop(s); // drop sender and disconnect the send side from the channel
+        /// assert_eq!(r.is_disconnected(),true);
+        /// # anyhow::Ok(())
+        /// # });
+        /// ```
+        pub fn is_disconnected(&self) -> bool {
+            acquire_internal(&self.internal).send_count == 0
+        }
     };
 }
 
 impl<T> Sender<T> {
     /// Sends data to the channel
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # let (s, r) = kanal::bounded(0);
+    /// # spawn(move || {
+    ///  s.send("Hello").unwrap();
+    /// #      anyhow::Ok(())
+    /// # });
+    /// # let name=r.recv()?;
+    /// # println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// ```
     #[inline(always)]
     pub fn send(&self, mut data: T) -> Result<(), Error> {
         let mut internal = acquire_internal(&self.internal);
@@ -450,6 +631,20 @@ impl<T> Sender<T> {
     }
     /// Sends data to the channel with a deadline, if send fails then the object will be dropped.
     /// you can use send_option_timeout if you like to keep the object in case of timeout.
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # use std::time::Duration;
+    /// # let (s, r) = kanal::bounded(0);
+    /// # spawn(move || {
+    ///  s.send_timeout("Hello",Duration::from_millis(500)).unwrap();
+    /// #      anyhow::Ok(())
+    /// # });
+    /// # let name=r.recv()?;
+    /// # println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// ```
     #[inline(always)]
     pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), ErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
@@ -499,7 +694,22 @@ impl<T> Sender<T> {
         // if the queue is not empty send the data
     }
 
-    /// Tries to send data from provided option with a deadline
+    /// Tries to send data from provided option with a deadline, it will panic on successful send for None option.
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # use std::time::Duration;
+    /// # let (s, r) = kanal::bounded(0);
+    /// # spawn(move || {
+    ///  let mut opt=Some("Hello");
+    ///  s.send_option_timeout(&mut opt,Duration::from_millis(500)).unwrap();
+    /// #      anyhow::Ok(())
+    /// # });
+    /// # let name=r.recv()?;
+    /// # println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// ```
     #[inline(always)]
     pub fn send_option_timeout(
         &self,
@@ -564,16 +774,22 @@ impl<T> Sender<T> {
             internal: self.internal.clone(),
         }
     }
-    /// Returns whether the receive side of the channel is closed or not
-    pub fn is_disconnected(&self) -> bool {
-        acquire_internal(&self.internal).recv_count == 0
-    }
     shared_impl!();
 }
 
 #[cfg(feature = "async")]
 impl<T> AsyncSender<T> {
     /// Sends data asynchronously to the channel
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let (s, r) = kanal::unbounded_async();
+    /// s.send(1).await?;
+    /// assert_eq!(r.recv().await?,1);
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
     #[inline(always)]
     pub fn send(&'_ self, data: T) -> SendFuture<'_, T> {
         SendFuture {
@@ -585,6 +801,18 @@ impl<T> AsyncSender<T> {
     }
     shared_send_impl!();
     /// Clones async sender as sync version of it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let (s, r) = kanal::unbounded_async();
+    /// let sync_sender=s.clone_sync();
+    /// // JUST FOR EXAMPLE IT IS WRONG TO USE SYNC INSTANCE IN ASYNC CONTEXT
+    /// sync_sender.send(1)?;
+    /// assert_eq!(r.recv().await?,1);
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
     pub fn clone_sync(&self) -> Sender<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count > 0 {
@@ -595,20 +823,15 @@ impl<T> AsyncSender<T> {
         }
     }
 
-    /// Returns whether the receive side of the channel is closed or not
-    pub fn is_disconnected(&self) -> bool {
-        acquire_internal(&self.internal).recv_count == 0
-    }
     shared_impl!();
 }
 
-/// Receiving side of the channel in sync mode
-///
-/// Receivers can be cloned and produce receivers to operate in both sync and async modes
-/// `
-/// let receive_clone = r.clone();
-/// let receive_clone_async = r.clone_async();
-/// `
+/// Receiving side of the channel in sync mode.
+/// Receivers can be cloned and produce receivers to operate in both sync and async modes.
+/// ```
+/// let (_s, receiver) = kanal::bounded::<u64>(0);
+/// let async_receiver=receiver.clone_async();
+/// ```
 pub struct Receiver<T> {
     internal: Internal<T>,
 }
@@ -619,13 +842,12 @@ impl<T> Debug for Receiver<T> {
     }
 }
 
-/// Receiving side of the channel in async mode
-///
-/// Receivers can be cloned and produce receivers to operate in both sync and async modes
-/// `
-/// let receive_clone = r.clone();
-/// let receive_clone_sync = r.clone_sync();
-/// `
+/// Receiving side of the channel in async mode.
+/// Receivers can be cloned and produce receivers to operate in both sync and async modes.
+/// ```
+/// let (_s, receiver) = kanal::bounded_async::<u64>(0);
+/// let sync_receiver=receiver.clone_sync();
+/// ```
 #[cfg(feature = "async")]
 pub struct AsyncReceiver<T> {
     internal: Internal<T>,
@@ -734,10 +956,6 @@ impl<T> Receiver<T> {
         // if the queue is not empty send the data
     }
     shared_recv_impl!();
-    /// Returns if the send part of the channel is disconnected
-    pub fn is_disconnected(&self) -> bool {
-        acquire_internal(&self.internal).send_count == 0
-    }
     #[cfg(feature = "async")]
     /// Clones receiver as the async version of it
     pub fn clone_async(&self) -> AsyncReceiver<T> {
@@ -791,6 +1009,7 @@ impl<T> AsyncReceiver<T> {
             data: MaybeUninit::uninit(),
         }
     }
+    shared_recv_impl!();
     /// Returns sync cloned version of the receiver
     /// # Examples
     ///
@@ -800,6 +1019,7 @@ impl<T> AsyncReceiver<T> {
     /// let (s, r) = kanal::unbounded_async();
     /// s.send(1).await?;
     /// let sync_receiver=r.clone_sync();
+    /// // JUST FOR EXAMPLE IT IS WRONG TO USE SYNC INSTANCE IN ASYNC CONTEXT
     /// assert_eq!(sync_receiver.recv()?,1);
     /// # anyhow::Ok(())
     /// # });
@@ -812,22 +1032,6 @@ impl<T> AsyncReceiver<T> {
         Receiver::<T> {
             internal: self.internal.clone(),
         }
-    }
-    shared_recv_impl!();
-    /// Returns, whether the send side of the channel, is closed or not
-    /// # Examples
-    ///
-    /// ```
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # use tokio::{spawn as co};
-    /// let (s, r) = kanal::unbounded_async::<u64>();
-    /// drop(s); // drop sender and disconnect the send side from the channel
-    /// assert_eq!(r.is_disconnected(),true);
-    /// # anyhow::Ok(())
-    /// # });
-    /// ```
-    pub fn is_disconnected(&self) -> bool {
-        acquire_internal(&self.internal).send_count == 0
     }
     shared_impl!();
 }
