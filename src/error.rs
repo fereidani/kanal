@@ -4,7 +4,7 @@ use std::fmt::Debug;
 /// Error type for channel send operations without timeout
 #[derive(Debug)]
 pub enum SendError {
-    /// Indicates that the channel is closed on both sides with a call to `close()'
+    /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
     /// Indicates that all receiver instances are dropped and the channel is closed from the receive side
     ReceiveClosed,
@@ -25,7 +25,7 @@ impl fmt::Display for SendError {
 /// Error type for channel send operations with timeout
 #[derive(Debug)]
 pub enum SendErrorTimeout {
-    /// Indicates that the channel is closed on both sides with a call to `close()'
+    /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
     /// Indicates that all receiver instances are dropped and the channel is closed from the receive side
     ReceiveClosed,
@@ -49,7 +49,7 @@ impl fmt::Display for SendErrorTimeout {
 /// Error type for channel receive operations without timeout
 #[derive(Debug)]
 pub enum ReceiveError {
-    /// Indicates that the channel is closed on both sides with a call to `close()'
+    /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
     /// Indicates that all sender instances are dropped and the channel is closed from the send side
     SendClosed,
@@ -70,7 +70,7 @@ impl fmt::Display for ReceiveError {
 /// Error type for channel receive operations with timeout
 #[derive(Debug)]
 pub enum ReceiveErrorTimeout {
-    /// Indicates that the channel is closed on both sides with a call to `close()'
+    /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
     /// Indicates that all sender instances are dropped and the channel is closed from the send side
     SendClosed,
