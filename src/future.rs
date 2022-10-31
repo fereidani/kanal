@@ -8,7 +8,7 @@ use std::{
 use crate::{
     internal::{acquire_internal, Internal},
     signal::AsyncSignal,
-    state, Error,
+    state, SendError,
 };
 
 use pin_project_lite::pin_project;
@@ -59,7 +59,7 @@ pin_project! {
 }
 
 impl<'a, T> Future for SendFuture<'a, T> {
-    type Output = Result<(), Error>;
+    type Output = Result<(), SendError>;
 
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
@@ -70,7 +70,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 let mut internal = acquire_internal(this.internal);
                 if internal.send_count == 0 {
                     *this.state = FutureState::Done;
-                    return Poll::Ready(Err(Error::Closed));
+                    return Poll::Ready(Err(SendError::Closed));
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -87,7 +87,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 } else {
                     if internal.recv_count == 0 {
                         *this.state = FutureState::Done;
-                        return Poll::Ready(Err(Error::ReceiveClosed));
+                        return Poll::Ready(Err(SendError::ReceiveClosed));
                     }
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
@@ -106,7 +106,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                         if v == state::UNLOCKED {
                             return Poll::Ready(Ok(()));
                         }
-                        Poll::Ready(Err(Error::SendClosed))
+                        Poll::Ready(Err(SendError::Closed))
                     }
                     Poll::Pending => Poll::Pending,
                 }
@@ -147,7 +147,7 @@ pin_project! {
 }
 
 impl<'a, T> Future for ReceiveFuture<'a, T> {
-    type Output = Result<T, Error>;
+    type Output = Result<T, SendError>;
 
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
@@ -157,7 +157,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                 let mut internal = acquire_internal(this.internal);
                 if internal.recv_count == 0 {
                     *this.state = FutureState::Done;
-                    return Poll::Ready(Err(Error::Closed));
+                    return Poll::Ready(Err(SendError::Closed));
                 }
                 if let Some(v) = internal.queue.pop_front() {
                     if let Some(p) = internal.next_send() {
@@ -174,7 +174,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                 } else {
                     if internal.send_count == 0 {
                         *this.state = FutureState::Done;
-                        return Poll::Ready(Err(Error::SendClosed));
+                        return Poll::Ready(Err(SendError::Closed));
                     }
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
@@ -199,7 +199,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                                 }));
                             }
                         }
-                        Poll::Ready(Err(Error::ReceiveClosed))
+                        Poll::Ready(Err(SendError::ReceiveClosed))
                     }
                     Poll::Pending => Poll::Pending,
                 }

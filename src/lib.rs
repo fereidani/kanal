@@ -11,6 +11,9 @@ mod future;
 #[cfg(feature = "async")]
 pub use future::*;
 
+mod error;
+pub use error::*;
+
 pub(crate) mod internal;
 mod kanal_tests;
 pub(crate) mod mutex;
@@ -28,57 +31,6 @@ use std::fmt::Debug;
 #[cfg(feature = "async")]
 use signal::AsyncSignal;
 use signal::SyncSignal;
-
-/// Error type for channel operations without timeout
-#[derive(Debug)]
-pub enum Error {
-    /// Indicates that the channel is closed on both sides
-    Closed,
-    /// Indicates that the channel is closed from the send side
-    SendClosed,
-    /// Indicates that the channel is closed from the receive side
-    ReceiveClosed,
-}
-impl std::error::Error for Error {}
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(
-            match *self {
-                Error::Closed => "channel is closed",
-                Error::SendClosed => "channel send side is closed",
-                Error::ReceiveClosed => "channel receive side is closed",
-            },
-            f,
-        )
-    }
-}
-
-/// Error type for channel operations with timeout
-#[derive(Debug)]
-pub enum ErrorTimeout {
-    /// Indicates that the channel is closed on both sides
-    Closed,
-    /// Indicates that the channel is closed from the send side
-    SendClosed,
-    /// Indicates that the channel is closed from the receive side
-    ReceiveClosed,
-    /// Indicates that channel operation reached timeout and is canceled
-    Timeout,
-}
-impl std::error::Error for ErrorTimeout {}
-impl fmt::Display for ErrorTimeout {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(
-            match *self {
-                ErrorTimeout::Closed => "channel is closed",
-                ErrorTimeout::SendClosed => "channel send side is closed",
-                ErrorTimeout::ReceiveClosed => "channel receive side is closed",
-                ErrorTimeout::Timeout => "channel operation timeout",
-            },
-            f,
-        )
-    }
-}
 
 /// Sending side of the channel in sync mode.
 /// Senders can be cloned and produce senders to operate in both sync and async modes.
@@ -309,10 +261,10 @@ macro_rules! shared_send_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send(&self, data: T) -> Result<bool, Error> {
+        pub fn try_send(&self, data: T) -> Result<bool, SendError> {
             let mut internal = acquire_internal(&self.internal);
             if internal.send_count == 0 {
-                return Err(Error::Closed);
+                return Err(SendError::Closed);
             }
             if let Some(first) = internal.next_recv() {
                 drop(internal);
@@ -324,7 +276,7 @@ macro_rules! shared_send_impl {
                 return Ok(true);
             }
             if internal.recv_count == 0 {
-                return Err(Error::ReceiveClosed);
+                return Err(SendError::ReceiveClosed);
             }
             Ok(false)
         }
@@ -349,10 +301,10 @@ macro_rules! shared_send_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, Error> {
+        pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, SendError> {
             let mut internal = acquire_internal(&self.internal);
             if internal.send_count == 0 {
-                return Err(Error::Closed);
+                return Err(SendError::Closed);
             }
             if let Some(first) = internal.next_recv() {
                 drop(internal);
@@ -364,7 +316,7 @@ macro_rules! shared_send_impl {
                 return Ok(true);
             }
             if internal.recv_count == 0 {
-                return Err(Error::ReceiveClosed);
+                return Err(SendError::ReceiveClosed);
             }
             Ok(false)
         }
@@ -388,10 +340,10 @@ macro_rules! shared_send_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send_realtime(&self, data: T) -> Result<bool, Error> {
+        pub fn try_send_realtime(&self, data: T) -> Result<bool, SendError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
                 if internal.send_count == 0 {
-                    return Err(Error::Closed);
+                    return Err(SendError::Closed);
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -403,7 +355,7 @@ macro_rules! shared_send_impl {
                     return Ok(true);
                 }
                 if internal.recv_count == 0 {
-                    return Err(Error::ReceiveClosed);
+                    return Err(SendError::ReceiveClosed);
                 }
             }
             Ok(false)
@@ -430,10 +382,10 @@ macro_rules! shared_send_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send_option_realtime(&self, data: &mut Option<T>) -> Result<bool, Error> {
+        pub fn try_send_option_realtime(&self, data: &mut Option<T>) -> Result<bool, SendError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
                 if internal.send_count == 0 {
-                    return Err(Error::Closed);
+                    return Err(SendError::Closed);
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -445,7 +397,7 @@ macro_rules! shared_send_impl {
                     return Ok(true);
                 }
                 if internal.recv_count == 0 {
-                    return Err(Error::ReceiveClosed);
+                    return Err(SendError::ReceiveClosed);
                 }
             }
             Ok(false)
@@ -490,10 +442,10 @@ macro_rules! shared_recv_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_recv(&self) -> Result<Option<T>, Error> {
+        pub fn try_recv(&self) -> Result<Option<T>, ReceiveError> {
             let mut internal = acquire_internal(&self.internal);
             if internal.recv_count == 0 {
-                return Err(Error::Closed);
+                return Err(ReceiveError::Closed);
             }
             if let Some(v) = internal.queue.pop_front() {
                 if let Some(p) = internal.next_send() {
@@ -508,7 +460,7 @@ macro_rules! shared_recv_impl {
                 return unsafe { Ok(Some(p.recv())) };
             }
             if internal.send_count == 0 {
-                return Err(Error::SendClosed);
+                return Err(ReceiveError::SendClosed);
             }
             Ok(None)
             // if the queue is not empty send the data
@@ -534,10 +486,10 @@ macro_rules! shared_recv_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_recv_realtime(&self) -> Result<Option<T>, Error> {
+        pub fn try_recv_realtime(&self) -> Result<Option<T>, ReceiveError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
                 if internal.recv_count == 0 {
-                    return Err(Error::Closed);
+                    return Err(ReceiveError::Closed);
                 }
                 if let Some(v) = internal.queue.pop_front() {
                     if let Some(p) = internal.next_send() {
@@ -552,7 +504,7 @@ macro_rules! shared_recv_impl {
                     return unsafe { Ok(Some(p.recv())) };
                 }
                 if internal.send_count == 0 {
-                    return Err(Error::SendClosed);
+                    return Err(ReceiveError::SendClosed);
                 }
             }
             Ok(None)
@@ -592,10 +544,10 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send(&self, mut data: T) -> Result<(), Error> {
+    pub fn send(&self, mut data: T) -> Result<(), SendError> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count == 0 {
-            return Err(Error::Closed);
+            return Err(SendError::Closed);
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
@@ -607,7 +559,7 @@ impl<T> Sender<T> {
             Ok(())
         } else {
             if internal.recv_count == 0 {
-                return Err(Error::ReceiveClosed);
+                return Err(SendError::ReceiveClosed);
             }
             // send directly to the waitlist
             {
@@ -617,7 +569,7 @@ impl<T> Sender<T> {
                 internal.push_send(sig.as_signal());
                 drop(internal);
                 if !sig.wait() {
-                    return Err(Error::SendClosed);
+                    return Err(SendError::Closed);
                 }
                 // data semantically is moved so forget about dropping it if it requires dropping
                 if std::mem::needs_drop::<T>() {
@@ -646,11 +598,11 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), ErrorTimeout> {
+    pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), SendErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count == 0 {
-            return Err(ErrorTimeout::Closed);
+            return Err(SendErrorTimeout::Closed);
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
@@ -662,7 +614,7 @@ impl<T> Sender<T> {
             Ok(())
         } else {
             if internal.recv_count == 0 {
-                return Err(ErrorTimeout::ReceiveClosed);
+                return Err(SendErrorTimeout::ReceiveClosed);
             }
             // send directly to the waitlist
             let _data_address_holder = &data; // pin to address
@@ -672,17 +624,17 @@ impl<T> Sender<T> {
             drop(internal);
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
-                    return Err(ErrorTimeout::SendClosed);
+                    return Err(SendErrorTimeout::Closed);
                 }
                 {
                     let mut internal = acquire_internal(&self.internal);
                     if internal.cancel_send_signal(sig.as_signal()) {
-                        return Err(ErrorTimeout::Timeout);
+                        return Err(SendErrorTimeout::Timeout);
                     }
                 }
                 // removing receive failed to wait for the signal response
                 if !sig.wait() {
-                    return Err(ErrorTimeout::SendClosed);
+                    return Err(SendErrorTimeout::Closed);
                 }
             }
             // data semantically is moved so forget about dropping it if it requires dropping
@@ -715,11 +667,11 @@ impl<T> Sender<T> {
         &self,
         data: &mut Option<T>,
         duration: Duration,
-    ) -> Result<(), ErrorTimeout> {
+    ) -> Result<(), SendErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count == 0 {
-            return Err(ErrorTimeout::Closed);
+            return Err(SendErrorTimeout::Closed);
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
@@ -731,7 +683,7 @@ impl<T> Sender<T> {
             Ok(())
         } else {
             if internal.recv_count == 0 {
-                return Err(ErrorTimeout::ReceiveClosed);
+                return Err(SendErrorTimeout::ReceiveClosed);
             }
             // send directly to the waitlist
             let mut d = data.take().unwrap();
@@ -743,19 +695,19 @@ impl<T> Sender<T> {
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
                     *data = Some(d);
-                    return Err(ErrorTimeout::SendClosed);
+                    return Err(SendErrorTimeout::Closed);
                 }
                 {
                     let mut internal = acquire_internal(&self.internal);
                     if internal.cancel_send_signal(sig.as_signal()) {
                         *data = Some(d);
-                        return Err(ErrorTimeout::Timeout);
+                        return Err(SendErrorTimeout::Timeout);
                     }
                 }
                 // removing receive failed to wait for the signal response
                 if !sig.wait() {
                     *data = Some(d);
-                    return Err(ErrorTimeout::SendClosed);
+                    return Err(SendErrorTimeout::Closed);
                 }
             }
             Ok(())
@@ -862,10 +814,10 @@ impl<T> Debug for AsyncReceiver<T> {
 impl<T> Receiver<T> {
     /// Receives data from the channel
     #[inline(always)]
-    pub fn recv(&self) -> Result<T, Error> {
+    pub fn recv(&self) -> Result<T, SendError> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
-            return Err(Error::Closed);
+            return Err(SendError::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
             if let Some(p) = internal.next_send() {
@@ -880,7 +832,7 @@ impl<T> Receiver<T> {
             unsafe { Ok(p.recv()) }
         } else {
             if internal.send_count == 0 {
-                return Err(Error::SendClosed);
+                return Err(SendError::Closed);
             }
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
@@ -892,7 +844,7 @@ impl<T> Receiver<T> {
                 drop(internal);
 
                 if !sig.wait() {
-                    return Err(Error::ReceiveClosed);
+                    return Err(SendError::ReceiveClosed);
                 }
             }
             // Safety: it's safe to assume init as data is forgotten on another side
@@ -902,11 +854,11 @@ impl<T> Receiver<T> {
     }
     /// Tries receiving from the channel within a duration
     #[inline(always)]
-    pub fn recv_timeout(&self, duration: Duration) -> Result<T, ErrorTimeout> {
+    pub fn recv_timeout(&self, duration: Duration) -> Result<T, SendErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
-            return Err(ErrorTimeout::Closed);
+            return Err(SendErrorTimeout::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
             if let Some(p) = internal.next_send() {
@@ -921,10 +873,10 @@ impl<T> Receiver<T> {
             unsafe { Ok(p.recv()) }
         } else {
             if Instant::now() > deadline {
-                return Err(ErrorTimeout::Timeout);
+                return Err(SendErrorTimeout::Timeout);
             }
             if internal.send_count == 0 {
-                return Err(ErrorTimeout::SendClosed);
+                return Err(SendErrorTimeout::Closed);
             }
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
@@ -936,17 +888,17 @@ impl<T> Receiver<T> {
                 drop(internal);
                 if !sig.wait_timeout(deadline) {
                     if sig.is_terminated() {
-                        return Err(ErrorTimeout::ReceiveClosed);
+                        return Err(SendErrorTimeout::ReceiveClosed);
                     }
                     {
                         let mut internal = acquire_internal(&self.internal);
                         if internal.cancel_recv_signal(sig.as_signal()) {
-                            return Err(ErrorTimeout::Timeout);
+                            return Err(SendErrorTimeout::Timeout);
                         }
                     }
                     // removing receive failed to wait for the signal response
                     if !sig.wait() {
-                        return Err(ErrorTimeout::ReceiveClosed);
+                        return Err(SendErrorTimeout::ReceiveClosed);
                     }
                 }
             }
