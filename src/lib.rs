@@ -814,10 +814,10 @@ impl<T> Debug for AsyncReceiver<T> {
 impl<T> Receiver<T> {
     /// Receives data from the channel
     #[inline(always)]
-    pub fn recv(&self) -> Result<T, SendError> {
+    pub fn recv(&self) -> Result<T, ReceiveError> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
-            return Err(SendError::Closed);
+            return Err(ReceiveError::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
             if let Some(p) = internal.next_send() {
@@ -832,7 +832,7 @@ impl<T> Receiver<T> {
             unsafe { Ok(p.recv()) }
         } else {
             if internal.send_count == 0 {
-                return Err(SendError::Closed);
+                return Err(ReceiveError::SendClosed);
             }
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
@@ -844,7 +844,7 @@ impl<T> Receiver<T> {
                 drop(internal);
 
                 if !sig.wait() {
-                    return Err(SendError::ReceiveClosed);
+                    return Err(ReceiveError::Closed);
                 }
             }
             // Safety: it's safe to assume init as data is forgotten on another side
@@ -854,11 +854,11 @@ impl<T> Receiver<T> {
     }
     /// Tries receiving from the channel within a duration
     #[inline(always)]
-    pub fn recv_timeout(&self, duration: Duration) -> Result<T, SendErrorTimeout> {
+    pub fn recv_timeout(&self, duration: Duration) -> Result<T, ReceiveErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
-            return Err(SendErrorTimeout::Closed);
+            return Err(ReceiveErrorTimeout::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
             if let Some(p) = internal.next_send() {
@@ -873,10 +873,10 @@ impl<T> Receiver<T> {
             unsafe { Ok(p.recv()) }
         } else {
             if Instant::now() > deadline {
-                return Err(SendErrorTimeout::Timeout);
+                return Err(ReceiveErrorTimeout::Timeout);
             }
             if internal.send_count == 0 {
-                return Err(SendErrorTimeout::Closed);
+                return Err(ReceiveErrorTimeout::SendClosed);
             }
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
@@ -888,17 +888,17 @@ impl<T> Receiver<T> {
                 drop(internal);
                 if !sig.wait_timeout(deadline) {
                     if sig.is_terminated() {
-                        return Err(SendErrorTimeout::ReceiveClosed);
+                        return Err(ReceiveErrorTimeout::Closed);
                     }
                     {
                         let mut internal = acquire_internal(&self.internal);
                         if internal.cancel_recv_signal(sig.as_signal()) {
-                            return Err(SendErrorTimeout::Timeout);
+                            return Err(ReceiveErrorTimeout::Timeout);
                         }
                     }
                     // removing receive failed to wait for the signal response
                     if !sig.wait() {
-                        return Err(SendErrorTimeout::ReceiveClosed);
+                        return Err(ReceiveErrorTimeout::Closed);
                     }
                 }
             }
