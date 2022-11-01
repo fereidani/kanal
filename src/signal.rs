@@ -20,7 +20,7 @@ impl<T> std::future::Future for AsyncSignal<T> {
     type Output = u8;
     #[inline(always)]
     fn poll(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let v = self.state.value();
