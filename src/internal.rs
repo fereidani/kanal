@@ -128,6 +128,16 @@ impl<T> ChannelInternal<T> {
         }
         false
     }
+
+    /// Updates the send signal in case that signal waker is changed.
+    pub fn signal_exists(&mut self, sig: Signal<T>) -> bool {
+        for signal in self.send_wait.iter() {
+            if sig == *signal {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Drop implementation for the channel internal, it will signal all waiters about the closing of the channel with a termination signal

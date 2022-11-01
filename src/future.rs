@@ -99,16 +99,38 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 }
             }
             FutureState::Waiting => {
-                let r = this.sig.poll(cx);
-                match r {
-                    Poll::Ready(v) => {
-                        *this.state = FutureState::Done;
-                        if v == state::UNLOCKED {
-                            return Poll::Ready(Ok(()));
+                if this.sig.will_wake(cx.waker()) {
+                    // waker is same no need to update
+                    let r = this.sig.poll(cx);
+                    match r {
+                        Poll::Ready(v) => {
+                            *this.state = FutureState::Done;
+                            if v == state::UNLOCKED {
+                                return Poll::Ready(Ok(()));
+                            }
+                            Poll::Ready(Err(SendError::Closed))
                         }
-                        Poll::Ready(Err(SendError::Closed))
+                        Poll::Pending => Poll::Pending,
                     }
-                    Poll::Pending => Poll::Pending,
+                } else {
+                    // Waker is changed and we need to update waker in the waiting list
+                    {
+                        let mut internal = acquire_internal(this.internal);
+                        if internal.signal_exists(this.sig.as_signal()) {
+                            // signal is not shared with other thread yet so it's safe to update waker locally
+                            this.sig.register(cx.waker());
+                            return Poll::Pending;
+                        }
+                    }
+                    // signal is already shared, and data will be available shortly, so wait synchronously and return the result
+                    // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
+                    //   we can wait synchronously and receive it.
+                    let v = this.sig.wait_indefinitely();
+                    *this.state = FutureState::Done;
+                    if v == state::UNLOCKED {
+                        return Poll::Ready(Ok(()));
+                    }
+                    Poll::Ready(Err(SendError::Closed))
                 }
             }
             _ => {
@@ -134,7 +156,7 @@ pin_project! {
             if !this.state.is_done() && this.state.is_waiting() {
                 let mut internal = acquire_internal(this.internal);
                 if !internal.cancel_recv_signal(this.sig.as_signal()){
-                    // someone got signal ownership, should wait until the response
+                    // a sender got signal ownership, should wait until the response
                     this.sig.wait_indefinitely();
                     // got ownership of data that is not going to be used ever again, so drop it
                     if needs_drop::<T>(){
@@ -186,22 +208,49 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                 }
             }
             FutureState::Waiting => {
-                let r = this.sig.poll(cx);
-                match r {
-                    Poll::Ready(v) => {
-                        *this.state = FutureState::Done;
-                        if v == state::UNLOCKED {
-                            if std::mem::size_of::<T>() == 0 {
-                                return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
-                            } else {
-                                return Poll::Ready(Ok(unsafe {
-                                    std::ptr::read(this.data.as_mut_ptr())
-                                }));
+                if this.sig.will_wake(cx.waker()) {
+                    // waker is same no need to update
+                    let r = this.sig.poll(cx);
+                    match r {
+                        Poll::Ready(v) => {
+                            *this.state = FutureState::Done;
+                            if v == state::UNLOCKED {
+                                if std::mem::size_of::<T>() == 0 {
+                                    return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
+                                } else {
+                                    return Poll::Ready(Ok(unsafe {
+                                        std::ptr::read(this.data.as_mut_ptr())
+                                    }));
+                                }
                             }
+                            Poll::Ready(Err(ReceiveError::Closed))
                         }
-                        Poll::Ready(Err(ReceiveError::Closed))
+                        Poll::Pending => Poll::Pending,
                     }
-                    Poll::Pending => Poll::Pending,
+                } else {
+                    // the Waker is changed and we need to update waker in the waiting list
+                    {
+                        let mut internal = acquire_internal(this.internal);
+                        if internal.signal_exists(this.sig.as_signal()) {
+                            // signal is not shared with other thread yet so it's safe to update waker locally
+                            this.sig.register(cx.waker());
+                            return Poll::Pending;
+                        }
+                    }
+                    // the signal is already shared, and data will be available shortly, so wait synchronously and return the result
+                    // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
+                    //   we can wait synchronously and receive it.
+                    let v = this.sig.wait_indefinitely();
+                    if v == state::UNLOCKED {
+                        if std::mem::size_of::<T>() == 0 {
+                            return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
+                        } else {
+                            return Poll::Ready(Ok(unsafe {
+                                std::ptr::read(this.data.as_mut_ptr())
+                            }));
+                        }
+                    }
+                    Poll::Ready(Err(ReceiveError::Closed))
                 }
             }
             _ => {

@@ -123,6 +123,11 @@ impl<T> AsyncSignal<T> {
     pub fn wait_indefinitely(&self) -> u8 {
         self.state.wait_indefinitely()
     }
+
+    /// Checks if provided waker wakes the same task
+    pub fn will_wake(&self, waker: &Waker) -> bool {
+        self.waker.as_ref().unwrap().will_wake(waker)
+    }
 }
 
 pub struct SyncSignal<T> {
