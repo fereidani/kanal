@@ -21,14 +21,11 @@ impl<T> std::future::Future for AsyncSignal<T> {
     #[inline(always)]
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let v = self.state.value();
         if v < LOCKED {
             return std::task::Poll::Ready(v);
-        }
-        {
-            self.waker = Some(cx.waker().clone())
         }
         let v = self.state.value();
         if v >= LOCKED {
