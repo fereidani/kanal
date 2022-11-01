@@ -1,6 +1,6 @@
+#![forbid(unsafe_code)]
 use std::fmt;
 use std::fmt::Debug;
-
 /// Error type for channel send operations without timeout
 #[derive(Debug)]
 pub enum SendError {
