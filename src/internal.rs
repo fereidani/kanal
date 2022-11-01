@@ -129,9 +129,19 @@ impl<T> ChannelInternal<T> {
         false
     }
 
-    /// Updates the send signal in case that signal waker is changed.
-    pub fn signal_exists(&mut self, sig: Signal<T>) -> bool {
+    /// checks if send signal exists in wait list
+    pub fn send_signal_exists(&mut self, sig: Signal<T>) -> bool {
         for signal in self.send_wait.iter() {
+            if sig == *signal {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// checks if receive signal exists in wait list
+    pub fn recv_signal_exists(&mut self, sig: Signal<T>) -> bool {
+        for signal in self.recv_wait.iter() {
             if sig == *signal {
                 return true;
             }

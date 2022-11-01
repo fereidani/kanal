@@ -116,7 +116,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     // Waker is changed and we need to update waker in the waiting list
                     {
                         let mut internal = acquire_internal(this.internal);
-                        if internal.signal_exists(this.sig.as_signal()) {
+                        if internal.send_signal_exists(this.sig.as_signal()) {
                             // signal is not shared with other thread yet so it's safe to update waker locally
                             this.sig.register(cx.waker());
                             return Poll::Pending;
@@ -231,7 +231,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     // the Waker is changed and we need to update waker in the waiting list
                     {
                         let mut internal = acquire_internal(this.internal);
-                        if internal.signal_exists(this.sig.as_signal()) {
+                        if internal.recv_signal_exists(this.sig.as_signal()) {
                             // signal is not shared with other thread yet so it's safe to update waker locally
                             this.sig.register(cx.waker());
                             return Poll::Pending;
