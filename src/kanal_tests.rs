@@ -2,9 +2,9 @@
 #[cfg(not(miri))]
 const MESSAGES: usize = 1000000;
 #[cfg(miri)]
-const MESSAGES: usize = 1000;
+const MESSAGES: usize = 1024;
 
-const THREADS: usize = 8;
+const THREADS: usize = 64;
 
 #[cfg(test)]
 mod tests {
