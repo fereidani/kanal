@@ -250,7 +250,7 @@ macro_rules! shared_send_impl {
         /// ```
         /// # use std::thread::spawn;
         /// let (s, r) = kanal::bounded(0);
-        /// spawn( move || {
+        /// let t=spawn( move || {
         ///     loop{
         ///         if s.try_send(1).unwrap(){
         ///             break;
@@ -258,6 +258,7 @@ macro_rules! shared_send_impl {
         ///     }
         /// });
         /// assert_eq!(r.recv()?,1);
+        /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
@@ -289,7 +290,7 @@ macro_rules! shared_send_impl {
         /// ```
         /// # use std::thread::spawn;
         /// let (s, r) = kanal::bounded(0);
-        /// spawn( move || {
+        /// let t=spawn( move || {
         ///     let mut opt=Some(1);
         ///     loop{
         ///         if s.try_send_option(&mut opt).unwrap(){
@@ -298,6 +299,7 @@ macro_rules! shared_send_impl {
         ///     }
         /// });
         /// assert_eq!(r.recv()?,1);
+        /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
@@ -329,7 +331,7 @@ macro_rules! shared_send_impl {
         /// ```
         /// # use std::thread::spawn;
         /// let (s, r) = kanal::bounded(0);
-        /// spawn( move || {
+        /// let t=spawn( move || {
         ///     loop{
         ///         if s.try_send_realtime(1).unwrap(){
         ///             break;
@@ -337,6 +339,7 @@ macro_rules! shared_send_impl {
         ///     }
         /// });
         /// assert_eq!(r.recv()?,1);
+        /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
@@ -370,7 +373,7 @@ macro_rules! shared_send_impl {
         /// ```
         /// # use std::thread::spawn;
         /// let (s, r) = kanal::bounded(0);
-        /// spawn( move || {
+        /// let t=spawn( move || {
         ///     let mut opt=Some(1);
         ///     loop{
         ///         if s.try_send_option_realtime(&mut opt).unwrap(){
@@ -379,6 +382,7 @@ macro_rules! shared_send_impl {
         ///     }
         /// });
         /// assert_eq!(r.recv()?,1);
+        /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
@@ -429,7 +433,7 @@ macro_rules! shared_recv_impl {
         /// ```
         /// # use std::thread::spawn;
         /// # let (s, r) = kanal::bounded(0);
-        /// # spawn(move || {
+        /// # let t=spawn(move || {
         /// #      s.send("Buddy")?;
         /// #      anyhow::Ok(())
         /// # });
@@ -439,6 +443,7 @@ macro_rules! shared_recv_impl {
         ///         break;
         ///     }
         /// }
+        /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
@@ -473,7 +478,7 @@ macro_rules! shared_recv_impl {
         /// ```
         /// # use std::thread::spawn;
         /// # let (s, r) = kanal::bounded(0);
-        /// # spawn(move || {
+        /// # let t=spawn(move || {
         /// #      s.send("Buddy")?;
         /// #      anyhow::Ok(())
         /// # });
@@ -483,6 +488,7 @@ macro_rules! shared_recv_impl {
         ///         break;
         ///     }
         /// }
+        /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
