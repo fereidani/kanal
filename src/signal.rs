@@ -47,6 +47,16 @@ unsafe fn read_ptr<T>(ptr: *const T) -> T {
     }
 }
 
+/// moves data to ptr location, ptr can be invalid memory location if type is zero-sized
+#[inline(always)]
+unsafe fn move_to_ptr<T>(ptr: *mut T, d: T) {
+    if std::mem::size_of::<T>() > 0 {
+        std::ptr::write(ptr, d);
+    } else {
+        std::mem::forget(d);
+    }
+}
+
 #[cfg(feature = "async")]
 impl<T> AsyncSignal<T> {
     /// Signal to send data to a writer
@@ -79,9 +89,9 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
-            *(*this).data = d;
+            move_to_ptr((*this).data, d);
         }
-        let waker = (*this).waker.as_ref().unwrap().clone();
+        let waker = AsyncSignal::clone_waker(this);
         (*this).state.store(UNLOCKED);
         waker.wake();
     }
@@ -91,13 +101,13 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub unsafe fn recv(this: *const Self) -> T {
         if std::mem::size_of::<T>() > 0 {
-            let waker = (*this).waker.as_ref().unwrap().clone();
+            let waker = AsyncSignal::clone_waker(this);
             let r = read_ptr((*this).data);
             (*this).state.store(UNLOCKED);
             waker.wake();
             r
         } else {
-            let waker = (*this).waker.as_ref().unwrap().clone();
+            let waker = AsyncSignal::clone_waker(this);
             (*this).state.store(UNLOCKED);
             waker.wake();
             std::mem::zeroed()
@@ -114,7 +124,7 @@ impl<T> AsyncSignal<T> {
     /// Safety: it's only safe to be called only once on send/receive signals that are not finished or terminated
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
-        let waker = (*this).waker.as_ref().unwrap().clone();
+        let waker = AsyncSignal::clone_waker(this);
         (*this).state.store(TERMINATED);
         waker.wake();
     }
@@ -127,6 +137,13 @@ impl<T> AsyncSignal<T> {
     /// Checks if provided waker wakes the same task
     pub fn will_wake(&self, waker: &Waker) -> bool {
         self.waker.as_ref().unwrap().will_wake(waker)
+    }
+
+    /// clones waker from signal pointer
+    /// Safety: only safe to call if signal is on waiting state.
+    #[inline(always)]
+    unsafe fn clone_waker(this: *const Self) -> Waker {
+        unsafe { (*this).waker.as_ref().unwrap().clone() }
     }
 }
 
