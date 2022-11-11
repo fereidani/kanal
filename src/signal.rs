@@ -145,7 +145,7 @@ impl<T> AsyncSignal<T> {
     /// Safety: only safe to call if signal is on waiting state.
     #[inline(always)]
     unsafe fn clone_waker(this: *const Self) -> Waker {
-        unsafe { (*this).waker.as_ref().unwrap().clone() }
+        (*this).waker.as_ref().unwrap().clone()
     }
 }
 
