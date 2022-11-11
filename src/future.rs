@@ -45,12 +45,16 @@ pin_project! {
     }
     impl<'a,T> PinnedDrop for SendFuture<'a,T> {
         fn drop(mut this: Pin<&mut Self>) {
-            if !this.state.is_done() && this.state.is_waiting() {
-                let mut internal = acquire_internal(this.internal);
-                if !internal.cancel_send_signal(this.sig.as_signal()){
+            if !this.state.is_done() {
+                if this.state.is_waiting()&&!acquire_internal(this.internal).cancel_send_signal(this.sig.as_signal()){
                     // a receiver got signal ownership, should wait until the response
                     this.sig.wait_indefinitely();
-                }else if needs_drop::<T>(){
+                    // no need to drop data is moved to receiver
+                    return
+                }
+                // signal is canceled, or in zero stated, drop data locally
+                if needs_drop::<T>(){
+                    // Safety: data is not moved it's safe to drop it
                     unsafe{this.data.assume_init_drop()};
                 }
             }
@@ -68,9 +72,17 @@ impl<'a, T> Future for SendFuture<'a, T> {
         match *this.state {
             FutureState::Zero => {
                 let mut internal = acquire_internal(this.internal);
-                if internal.send_count == 0 {
+                if internal.recv_count == 0 {
+                    let send_count = internal.send_count;
+                    drop(internal);
+                    // the data failed to move, drop it locally
+                    // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                    unsafe { this.data.assume_init_drop() };
                     *this.state = FutureState::Done;
-                    return Poll::Ready(Err(SendError::Closed));
+                    if send_count == 0 {
+                        return Poll::Ready(Err(SendError::Closed));
+                    }
+                    return Poll::Ready(Err(SendError::ReceiveClosed));
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -85,10 +97,6 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     *this.state = FutureState::Done;
                     Poll::Ready(Ok(()))
                 } else {
-                    if internal.recv_count == 0 {
-                        *this.state = FutureState::Done;
-                        return Poll::Ready(Err(SendError::ReceiveClosed));
-                    }
                     *this.state = FutureState::Waiting;
                     this.sig.set_ptr(this.data.as_mut_ptr());
                     this.sig.register(cx.waker());
@@ -108,6 +116,9 @@ impl<'a, T> Future for SendFuture<'a, T> {
                             if v == state::UNLOCKED {
                                 return Poll::Ready(Ok(()));
                             }
+                            // the data failed to move, drop it locally
+                            // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                            unsafe { this.data.assume_init_drop() };
                             Poll::Ready(Err(SendError::Closed))
                         }
                         Poll::Pending => Poll::Pending,
@@ -130,6 +141,9 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     if v == state::UNLOCKED {
                         return Poll::Ready(Ok(()));
                     }
+                    // the data failed to move, drop it locally
+                    // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                    unsafe { this.data.assume_init_drop() };
                     Poll::Ready(Err(SendError::Closed))
                 }
             }
@@ -153,10 +167,10 @@ pin_project! {
     }
     impl<'a,T> PinnedDrop for ReceiveFuture<'a,T> {
         fn drop(mut this: Pin<&mut Self>) {
-            if !this.state.is_done() && this.state.is_waiting() {
-                let mut internal = acquire_internal(this.internal);
-                if !internal.cancel_recv_signal(this.sig.as_signal()){
-                    // a sender got signal ownership, should wait until the response
+            if this.state.is_waiting() {
+                // try to cancel recv signal
+                if !acquire_internal(this.internal).cancel_recv_signal(this.sig.as_signal()){
+                    // a sender got signal ownership, receiver should wait until the response
                     this.sig.wait_indefinitely();
                     // got ownership of data that is not going to be used ever again, so drop it
                     if needs_drop::<T>(){
