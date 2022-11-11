@@ -35,20 +35,21 @@ impl DropTester {
         if i == 0 {
             panic!("don't initialize DropTester with 0");
         }
-        return Self {
+        Self {
             i,
             dropped: false,
             counter,
-        };
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::kanal_tests::{DropTester, MESSAGES, THREADS};
-    use crate::{bounded, unbounded, Receiver, Sender};
+    use crate::{bounded, unbounded, ReceiveError, Receiver, SendError, Sender};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
         match cap {
@@ -160,11 +161,119 @@ mod tests {
         assert_eq!(rx.recv().unwrap(), 1);
     }
 
+    // Channel logic tests
+    #[test]
+    fn recv_from_half_closed_queue() {
+        let (tx, rx) = new(Some(1));
+        tx.send(1).unwrap();
+        drop(tx);
+        // it's ok to receive data from queue of half closed channel
+        assert_eq!(rx.recv().unwrap(), 1);
+    }
+
+    #[test]
+    fn recv_from_half_closed_channel() {
+        let (tx, rx) = new::<u64>(Some(1));
+        drop(tx);
+        assert_eq!(rx.recv().err().unwrap(), ReceiveError::SendClosed);
+    }
+
+    #[test]
+    fn recv_from_closed_channel() {
+        let (tx, rx) = new::<u64>(Some(1));
+        tx.close();
+        assert_eq!(rx.recv().err().unwrap(), ReceiveError::Closed);
+    }
+
+    #[test]
+    fn recv_from_closed_channel_queue() {
+        let (tx, rx) = new(Some(1));
+        tx.send(1).unwrap();
+        tx.close();
+        // it's not possible to read data from queue of fully closed channel
+        assert_eq!(rx.recv().err().unwrap(), ReceiveError::Closed);
+    }
+
+    #[test]
+    fn send_to_half_closed_channel() {
+        let (tx, rx) = new(Some(1));
+        drop(rx);
+        assert_eq!(tx.send(1).err().unwrap(), SendError::ReceiveClosed);
+    }
+
+    #[test]
+    fn send_to_closed_channel() {
+        let (tx, rx) = new(Some(1));
+        rx.close();
+        assert_eq!(tx.send(1).err().unwrap(), SendError::Closed);
+    }
+
+    // Channel drop tests
     #[test]
     fn drop_test() {
         let counter = Arc::new(AtomicU64::new(0));
         mpmc_dyn!(DropTester::new(counter.clone(), 10), Some(1));
         assert_eq!(counter.load(Ordering::SeqCst), MESSAGES as u64);
+    }
+
+    #[test]
+    fn drop_test_in_queue() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let (s, r) = new(Some(10));
+        for _ in 0..10 {
+            s.send(DropTester::new(counter.clone(), 1234)).unwrap();
+        }
+        r.close();
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    #[test]
+    fn drop_test_send_to_closed() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let (s, r) = new(Some(10));
+        r.close();
+        for _ in 0..10 {
+            // will fail
+            let _ = s.send(DropTester::new(counter.clone(), 1234));
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    #[test]
+    fn drop_test_send_to_half_closed() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let (s, r) = new(Some(10));
+        drop(r);
+        for _ in 0..10 {
+            // will fail
+            let _ = s.send(DropTester::new(counter.clone(), 1234));
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    #[test]
+    fn drop_test_in_signal() {
+        let (s, r) = new(Some(0));
+
+        crossbeam::scope(|scope| {
+            let counter = Arc::new(AtomicU64::new(0));
+            let mut list = Vec::new();
+            for _ in 0..10 {
+                let counter = counter.clone();
+                let s = s.clone();
+                let t = scope.spawn(move |_| {
+                    let _ = s.send(DropTester::new(counter.clone(), 1234));
+                });
+                list.push(t);
+            }
+            std::thread::sleep(Duration::from_millis(1000));
+            r.close();
+            for t in list {
+                t.join().unwrap();
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+        })
+        .unwrap();
     }
 
     #[test]
@@ -227,7 +336,9 @@ mod tests {
 #[cfg(test)]
 mod async_tests {
     use crate::kanal_tests::{DropTester, MESSAGES, THREADS};
-    use crate::{bounded_async, unbounded_async, AsyncReceiver, AsyncSender};
+    use crate::{
+        bounded_async, unbounded_async, AsyncReceiver, AsyncSender, ReceiveError, SendError,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
@@ -351,6 +462,134 @@ mod async_tests {
         let counter = Arc::new(AtomicU64::new(0));
         async_mpmc_dyn!(let counter=counter.clone(),DropTester::new(counter.clone(), 10), Some(1));
         assert_eq!(counter.load(Ordering::SeqCst), MESSAGES as u64);
+    }
+
+    #[tokio::test]
+    async fn async_drop_test_in_signal() {
+        let (s, r) = new_async(Some(10));
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut list = Vec::new();
+        for _ in 0..10 {
+            let counter = counter.clone();
+            let s = s.clone();
+            let c = tokio::spawn(async move {
+                let _ = s.send(DropTester::new(counter, 1234)).await;
+            });
+            list.push(c);
+        }
+        r.close();
+        for c in list {
+            c.await.unwrap();
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    // Channel logic tests
+    #[tokio::test]
+    async fn async_recv_from_half_closed_queue() {
+        let (tx, rx) = new_async(Some(1));
+        tx.send(1).await.unwrap();
+        drop(tx);
+        // it's ok to receive data from queue of half closed channel
+        assert_eq!(rx.recv().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn async_recv_from_half_closed_channel() {
+        let (tx, rx) = new_async::<u64>(Some(1));
+        drop(tx);
+        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::SendClosed);
+    }
+
+    #[tokio::test]
+    async fn async_recv_from_closed_channel() {
+        let (tx, rx) = new_async::<u64>(Some(1));
+        tx.close();
+        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::Closed);
+    }
+
+    #[tokio::test]
+    async fn async_recv_from_closed_channel_queue() {
+        let (tx, rx) = new_async(Some(1));
+        tx.send(1).await.unwrap();
+        tx.close();
+        // it's not possible to read data from queue of fully closed channel
+        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::Closed);
+    }
+
+    #[tokio::test]
+    async fn async_send_to_half_closed_channel() {
+        let (tx, rx) = new_async(Some(1));
+        drop(rx);
+        assert_eq!(tx.send(1).await.err().unwrap(), SendError::ReceiveClosed);
+    }
+
+    #[tokio::test]
+    async fn async_send_to_closed_channel() {
+        let (tx, rx) = new_async(Some(1));
+        rx.close();
+        assert_eq!(tx.send(1).await.err().unwrap(), SendError::Closed);
+    }
+
+    // Drop tests
+    #[tokio::test]
+    async fn async_drop_test_in_queue() {
+        let (s, r) = new_async(Some(10));
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut list = Vec::new();
+        for _ in 0..10 {
+            let counter = counter.clone();
+            let s = s.clone();
+            // does nothing as the SendFuture is not awaited
+            let c = tokio::spawn(async move {
+                let _ = s.send(DropTester::new(counter, 1234)).await;
+            });
+            list.push(c);
+        }
+        for c in list {
+            c.await.unwrap();
+        }
+        r.close();
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    #[tokio::test]
+    async fn async_drop_test_in_unused_signal() {
+        let (s, r) = new_async(Some(10));
+
+        let counter = Arc::new(AtomicU64::new(0));
+        for _ in 0..10 {
+            let counter = counter.clone();
+            let _ = s.send(DropTester::new(counter, 1234));
+        }
+        r.close();
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    #[tokio::test]
+    async fn async_drop_test_send_to_closed() {
+        let (s, r) = new_async(Some(10));
+        r.close();
+        let counter = Arc::new(AtomicU64::new(0));
+        for _ in 0..10 {
+            let counter = counter.clone();
+            let _ = s.send(DropTester::new(counter, 1234)).await;
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+    }
+
+    #[tokio::test]
+    async fn async_drop_test_send_to_half_closed() {
+        let (s, r) = new_async(Some(10));
+        drop(r);
+        let counter = Arc::new(AtomicU64::new(0));
+        for _ in 0..10 {
+            let counter = counter.clone();
+            let _ = s.send(DropTester::new(counter, 1234)).await;
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
     }
 
     #[tokio::test]
