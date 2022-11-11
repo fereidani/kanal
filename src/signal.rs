@@ -222,7 +222,8 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
         if !(*this).state.terminate() {
-            // Same as send and recv
+            // Clone the thread because this.thread might get destroyed after force_terminate
+            // it's possible during unpark the other thread wakes up faster and drops the thread object
             let thread = (*this).thread.clone();
             (*this).state.force_terminate();
             thread.unpark();
