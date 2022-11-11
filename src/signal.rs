@@ -75,7 +75,9 @@ impl<T> AsyncSignal<T> {
     /// Set pointer to data for receiving or sending
     #[inline(always)]
     pub fn set_ptr(&mut self, data_ptr: *mut T) {
-        self.data = data_ptr;
+        if std::mem::size_of::<T>() > 0 {
+            self.data = data_ptr;
+        }
     }
 
     /// Convert async signal to common signal that works with channel internal
