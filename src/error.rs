@@ -2,7 +2,7 @@
 use std::fmt;
 use std::fmt::Debug;
 /// Error type for channel send operations without timeout
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
     /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
@@ -23,7 +23,7 @@ impl fmt::Display for SendError {
 }
 
 /// Error type for channel send operations with timeout
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SendErrorTimeout {
     /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
@@ -47,7 +47,7 @@ impl fmt::Display for SendErrorTimeout {
 }
 
 /// Error type for channel receive operations without timeout
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ReceiveError {
     /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
@@ -68,7 +68,7 @@ impl fmt::Display for ReceiveError {
 }
 
 /// Error type for channel receive operations with timeout
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ReceiveErrorTimeout {
     /// Indicates that the channel is closed on both sides with a call to `close()`
     Closed,
