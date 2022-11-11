@@ -219,8 +219,7 @@ macro_rules! shared_impl {
             internal.recv_count = 0;
             internal.send_count = 0;
             internal.terminate_signals();
-            internal.send_wait.clear();
-            internal.recv_wait.clear();
+            internal.queue.clear();
             true
         }
         /// Returns whether the channel is closed on both side of send and receive or not
@@ -264,8 +263,14 @@ macro_rules! shared_send_impl {
         #[inline(always)]
         pub fn try_send(&self, data: T) -> Result<bool, SendError> {
             let mut internal = acquire_internal(&self.internal);
-            if internal.send_count == 0 {
-                return Err(SendError::Closed);
+            if internal.recv_count == 0 {
+                let send_count = internal.send_count;
+                // Avoid wasting lock time on dropping failed send object
+                drop(internal);
+                if send_count == 0 {
+                    return Err(SendError::Closed);
+                }
+                return Err(SendError::ReceiveClosed);
             }
             if let Some(first) = internal.next_recv() {
                 drop(internal);
@@ -275,9 +280,6 @@ macro_rules! shared_send_impl {
             } else if internal.queue.len() < internal.capacity {
                 internal.queue.push_back(data);
                 return Ok(true);
-            }
-            if internal.recv_count == 0 {
-                return Err(SendError::ReceiveClosed);
             }
             Ok(false)
         }
@@ -305,8 +307,14 @@ macro_rules! shared_send_impl {
         #[inline(always)]
         pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, SendError> {
             let mut internal = acquire_internal(&self.internal);
-            if internal.send_count == 0 {
-                return Err(SendError::Closed);
+            if internal.recv_count == 0 {
+                let send_count = internal.send_count;
+                // Avoid wasting lock time on dropping failed send object
+                drop(internal);
+                if send_count == 0 {
+                    return Err(SendError::Closed);
+                }
+                return Err(SendError::ReceiveClosed);
             }
             if let Some(first) = internal.next_recv() {
                 drop(internal);
@@ -316,9 +324,6 @@ macro_rules! shared_send_impl {
             } else if internal.queue.len() < internal.capacity {
                 internal.queue.push_back(data.take().unwrap());
                 return Ok(true);
-            }
-            if internal.recv_count == 0 {
-                return Err(SendError::ReceiveClosed);
             }
             Ok(false)
         }
@@ -345,8 +350,14 @@ macro_rules! shared_send_impl {
         #[inline(always)]
         pub fn try_send_realtime(&self, data: T) -> Result<bool, SendError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if internal.send_count == 0 {
-                    return Err(SendError::Closed);
+                if internal.recv_count == 0 {
+                    let send_count = internal.send_count;
+                    // Avoid wasting lock time on dropping failed send object
+                    drop(internal);
+                    if send_count == 0 {
+                        return Err(SendError::Closed);
+                    }
+                    return Err(SendError::ReceiveClosed);
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -356,9 +367,6 @@ macro_rules! shared_send_impl {
                 } else if internal.queue.len() < internal.capacity {
                     internal.queue.push_back(data);
                     return Ok(true);
-                }
-                if internal.recv_count == 0 {
-                    return Err(SendError::ReceiveClosed);
                 }
             }
             Ok(false)
@@ -388,8 +396,14 @@ macro_rules! shared_send_impl {
         #[inline(always)]
         pub fn try_send_option_realtime(&self, data: &mut Option<T>) -> Result<bool, SendError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if internal.send_count == 0 {
-                    return Err(SendError::Closed);
+                if internal.recv_count == 0 {
+                    let send_count = internal.send_count;
+                    // Avoid wasting lock time on dropping failed send object
+                    drop(internal);
+                    if send_count == 0 {
+                        return Err(SendError::Closed);
+                    }
+                    return Err(SendError::ReceiveClosed);
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -399,9 +413,6 @@ macro_rules! shared_send_impl {
                 } else if internal.queue.len() < internal.capacity {
                     internal.queue.push_back(data.take().unwrap());
                     return Ok(true);
-                }
-                if internal.recv_count == 0 {
-                    return Err(SendError::ReceiveClosed);
                 }
             }
             Ok(false)
@@ -552,8 +563,14 @@ impl<T> Sender<T> {
     #[inline(always)]
     pub fn send(&self, mut data: T) -> Result<(), SendError> {
         let mut internal = acquire_internal(&self.internal);
-        if internal.send_count == 0 {
-            return Err(SendError::Closed);
+        if internal.recv_count == 0 {
+            let send_count = internal.send_count;
+            // Avoid wasting lock time on dropping failed send object
+            drop(internal);
+            if send_count == 0 {
+                return Err(SendError::Closed);
+            }
+            return Err(SendError::ReceiveClosed);
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
@@ -564,25 +581,19 @@ impl<T> Sender<T> {
             internal.queue.push_back(data);
             Ok(())
         } else {
-            if internal.recv_count == 0 {
-                return Err(SendError::ReceiveClosed);
-            }
             // send directly to the waitlist
-            {
-                let _data_address_holder = &data; // pin to address
-                let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
-                let _sig_address_holder = &sig;
-                internal.push_send(sig.as_signal());
-                drop(internal);
-                if !sig.wait() {
-                    return Err(SendError::Closed);
-                }
-                // data semantically is moved so forget about dropping it if it requires dropping
-                if std::mem::needs_drop::<T>() {
-                    std::mem::forget(data);
-                }
+            let _data_address_holder = &data; // pin to address
+            let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
+            let _sig_address_holder = &sig;
+            internal.push_send(sig.as_signal());
+            drop(internal);
+            if !sig.wait() {
+                return Err(SendError::Closed);
             }
-
+            // data semantically is moved so forget about dropping it if it requires dropping
+            if std::mem::needs_drop::<T>() {
+                std::mem::forget(data);
+            }
             Ok(())
         }
         // if the queue is not empty send the data
@@ -607,8 +618,14 @@ impl<T> Sender<T> {
     pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), SendErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
-        if internal.send_count == 0 {
-            return Err(SendErrorTimeout::Closed);
+        if internal.recv_count == 0 {
+            let send_count = internal.send_count;
+            // Avoid wasting lock time on dropping failed send object
+            drop(internal);
+            if send_count == 0 {
+                return Err(SendErrorTimeout::Closed);
+            }
+            return Err(SendErrorTimeout::ReceiveClosed);
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
@@ -619,9 +636,6 @@ impl<T> Sender<T> {
             internal.queue.push_back(data);
             Ok(())
         } else {
-            if internal.recv_count == 0 {
-                return Err(SendErrorTimeout::ReceiveClosed);
-            }
             // send directly to the waitlist
             let _data_address_holder = &data; // pin to address
             let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
@@ -676,8 +690,14 @@ impl<T> Sender<T> {
     ) -> Result<(), SendErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
-        if internal.send_count == 0 {
-            return Err(SendErrorTimeout::Closed);
+        if internal.recv_count == 0 {
+            let send_count = internal.send_count;
+            // Avoid wasting lock time on dropping failed send object
+            drop(internal);
+            if send_count == 0 {
+                return Err(SendErrorTimeout::Closed);
+            }
+            return Err(SendErrorTimeout::ReceiveClosed);
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
@@ -688,9 +708,6 @@ impl<T> Sender<T> {
             internal.queue.push_back(data.take().unwrap());
             Ok(())
         } else {
-            if internal.recv_count == 0 {
-                return Err(SendErrorTimeout::ReceiveClosed);
-            }
             // send directly to the waitlist
             let mut d = data.take().unwrap();
             let _data_address_holder = &d; // pin to address
