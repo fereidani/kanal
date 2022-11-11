@@ -41,11 +41,11 @@ This library focuses on bringing both sync and async API together to unify messa
 Results are normalized based on Kanal sync results, so 60x means the test for that framework takes 60 times slower than Kanal.
 
 Machine: `AMD Ryzen Threadripper 2950X 16-Core Processor`<br />
-Rust: `rustc rustc 1.64.0`<br />
-Go: `go version go1.19.2 linux/amd64`<br />
-OS (`uname -a`): `Linux 5.13.0-35-generic #40~20.04.1-Ubuntu SMP Mon Mar 7 09:18:32 UTC 2022 x86_64`<br />
-Date: Oct 30, 2022
+Rust: `rustc 1.65.0 (897e37553 2022-11-02)`<br />
+Go: `go version go1.19.3 linux/amd64`<br />
+OS (`uname -a`): `Linux 5.15.0-52-generic #58~20.04.1-Ubuntu SMP Thu Oct 13 13:09:46 UTC 2022 x86_64`<br />
+Date: Nov 11, 2022
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
-![Benchmarks](https://i.imgur.com/eTMeBK2.png)
+![Benchmarks](https://i.imgur.com/QK1UOyW.png)
