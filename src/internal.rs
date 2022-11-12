@@ -130,6 +130,7 @@ impl<T> ChannelInternal<T> {
     }
 
     /// checks if send signal exists in wait list
+    #[cfg(feature = "async")]
     pub fn send_signal_exists(&mut self, sig: Signal<T>) -> bool {
         for signal in self.send_wait.iter() {
             if sig == *signal {
@@ -140,6 +141,7 @@ impl<T> ChannelInternal<T> {
     }
 
     /// checks if receive signal exists in wait list
+    #[cfg(feature = "async")]
     pub fn recv_signal_exists(&mut self, sig: Signal<T>) -> bool {
         for signal in self.recv_wait.iter() {
             if sig == *signal {

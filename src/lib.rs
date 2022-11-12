@@ -113,6 +113,7 @@ impl<T> Clone for AsyncSender<T> {
     }
 }
 
+#[cfg(feature = "async")]
 impl<T> Debug for AsyncSender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AsyncSender {{ .. }}")
@@ -828,6 +829,7 @@ pub struct AsyncReceiver<T> {
     internal: Internal<T>,
 }
 
+#[cfg(feature = "async")]
 impl<T> Debug for AsyncReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AsyncReceiver {{ .. }}")

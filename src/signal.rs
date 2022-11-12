@@ -1,6 +1,5 @@
 use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 use std::marker::PhantomData;
-use std::task::Waker;
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
@@ -8,7 +7,7 @@ use std::time::{Duration, Instant};
 pub struct AsyncSignal<T> {
     state: State,
     data: *mut T,
-    waker: Option<Waker>,
+    waker: Option<std::task::Waker>,
     phantum: PhantomData<Box<T>>,
 }
 
@@ -48,6 +47,7 @@ unsafe fn read_ptr<T>(ptr: *const T) -> T {
 }
 
 /// moves data to ptr location, ptr can be invalid memory location if type is zero-sized
+#[cfg(feature = "async")]
 #[inline(always)]
 unsafe fn move_to_ptr<T>(ptr: *mut T, d: T) {
     if std::mem::size_of::<T>() > 0 {
@@ -116,12 +116,6 @@ impl<T> AsyncSignal<T> {
         }
     }
 
-    /// Register waker for async
-    #[inline(always)]
-    pub fn register(&mut self, waker: &Waker) {
-        self.waker = Some(waker.clone())
-    }
-
     /// Terminates operation and notifies the waiter , shall not be called more than once
     /// Safety: it's only safe to be called only once on send/receive signals that are not finished or terminated
     #[inline(always)]
@@ -136,15 +130,24 @@ impl<T> AsyncSignal<T> {
         self.state.wait_indefinitely()
     }
 
+    /// Register waker for async
+    #[cfg(feature = "async")]
+    #[inline(always)]
+    pub fn register(&mut self, waker: &std::task::Waker) {
+        self.waker = Some(waker.clone())
+    }
+
     /// Checks if provided waker wakes the same task
-    pub fn will_wake(&self, waker: &Waker) -> bool {
+    #[cfg(feature = "async")]
+    pub fn will_wake(&self, waker: &std::task::Waker) -> bool {
         self.waker.as_ref().unwrap().will_wake(waker)
     }
 
     /// clones waker from signal pointer
     /// Safety: only safe to call if signal is on waiting state.
     #[inline(always)]
-    unsafe fn clone_waker(this: *const Self) -> Waker {
+    #[cfg(feature = "async")]
+    unsafe fn clone_waker(this: *const Self) -> std::task::Waker {
         (*this).waker.as_ref().unwrap().clone()
     }
 }
