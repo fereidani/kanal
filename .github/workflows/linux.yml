@@ -61,3 +61,14 @@ jobs:
       - name: Clear the cargo caches
         run: |
           cargo-cache
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust
+        run: rustup toolchain install nightly --component miri && rustup default nightly
+      - run: cargo miri test --all-features
+        env:
+          MIRIFLAGS: -Zmiri-symbolic-alignment-check
+          RUSTFLAGS: ${{ env.RUSTFLAGS }} -Z randomize-layout
