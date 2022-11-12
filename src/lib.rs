@@ -36,7 +36,8 @@ use signal::SyncSignal;
 /// Senders can be cloned and produce senders to operate in both sync and async modes.
 /// # Examples
 ///
-/// ```
+/// ```ignore
+/// # // ignored because it correctly fails with --no-default-features
 /// let (sender, _r) = kanal::bounded::<u64>(0);
 /// let sync_sender=sender.clone_async();
 /// ```
@@ -423,7 +424,6 @@ macro_rules! shared_send_impl {
         /// # Examples
         ///
         /// ```
-        /// # use tokio::{spawn as co};
         /// let (s, r) = kanal::unbounded::<u64>();
         /// drop(r); // drop receiver and disconnect the receive side from the channel
         /// assert_eq!(s.is_disconnected(),true);
@@ -532,13 +532,9 @@ macro_rules! shared_recv_impl {
         /// # Examples
         ///
         /// ```
-        /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-        /// # use tokio::{spawn as co};
-        /// let (s, r) = kanal::unbounded_async::<u64>();
+        /// let (s, r) = kanal::unbounded::<u64>();
         /// drop(s); // drop sender and disconnect the send side from the channel
         /// assert_eq!(r.is_disconnected(),true);
-        /// # anyhow::Ok(())
-        /// # });
         /// ```
         pub fn is_disconnected(&self) -> bool {
             acquire_internal(&self.internal).send_count == 0
@@ -804,7 +800,8 @@ impl<T> AsyncSender<T> {
 
 /// Receiving side of the channel in sync mode.
 /// Receivers can be cloned and produce receivers to operate in both sync and async modes.
-/// ```
+/// ```ignore
+/// # // ignored because it correctly fails with --no-default-features
 /// let (_s, receiver) = kanal::bounded::<u64>(0);
 /// let async_receiver=receiver.clone_async();
 /// ```
