@@ -46,11 +46,12 @@ pin_project! {
     impl<'a,T> PinnedDrop for SendFuture<'a,T> {
         fn drop(mut this: Pin<&mut Self>) {
             if !this.state.is_done() {
-                if this.state.is_waiting()&&!acquire_internal(this.internal).cancel_send_signal(this.sig.as_signal()){
+                if this.state.is_waiting() && !acquire_internal(this.internal).cancel_send_signal(this.sig.as_signal()) {
                     // a receiver got signal ownership, should wait until the response
-                    this.sig.wait_indefinitely();
-                    // no need to drop data is moved to receiver
-                    return
+                    if this.sig.wait_indefinitely() == state::UNLOCKED {
+                        // no need to drop data is moved to receiver
+                        return
+                    }
                 }
                 // signal is canceled, or in zero stated, drop data locally
                 if needs_drop::<T>(){
@@ -136,9 +137,8 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     // signal is already shared, and data will be available shortly, so wait synchronously and return the result
                     // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
                     //   we can wait synchronously and receive it.
-                    let v = this.sig.wait_indefinitely();
                     *this.state = FutureState::Done;
-                    if v == state::UNLOCKED {
+                    if this.sig.wait_indefinitely() == state::UNLOCKED {
                         return Poll::Ready(Ok(()));
                     }
                     // the data failed to move, drop it locally
@@ -169,12 +169,13 @@ pin_project! {
         fn drop(mut this: Pin<&mut Self>) {
             if this.state.is_waiting() {
                 // try to cancel recv signal
-                if !acquire_internal(this.internal).cancel_recv_signal(this.sig.as_signal()){
+                if !acquire_internal(this.internal).cancel_recv_signal(this.sig.as_signal()) {
                     // a sender got signal ownership, receiver should wait until the response
-                    this.sig.wait_indefinitely();
-                    // got ownership of data that is not going to be used ever again, so drop it
-                    if needs_drop::<T>(){
-                        unsafe { std::ptr::drop_in_place(this.data.as_mut_ptr()) }
+                    if this.sig.wait_indefinitely() == state::UNLOCKED {
+                        // got ownership of data that is not going to be used ever again, so drop it
+                        if needs_drop::<T>(){
+                            unsafe { std::ptr::drop_in_place(this.data.as_mut_ptr()) }
+                        }
                     }
                 }
             }
@@ -254,8 +255,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     // the signal is already shared, and data will be available shortly, so wait synchronously and return the result
                     // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
                     //   we can wait synchronously and receive it.
-                    let v = this.sig.wait_indefinitely();
-                    if v == state::UNLOCKED {
+                    if this.sig.wait_indefinitely() == state::UNLOCKED {
                         if std::mem::size_of::<T>() == 0 {
                             return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
                         } else {
