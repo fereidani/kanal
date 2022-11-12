@@ -40,21 +40,28 @@ This library focuses on bringing both sync and async API together to unify messa
 ### Benchmark Results
 Results are based on how many messages can be passed in each scenario per second.
 
-1. empty tests are those tests that are passing zero-sized message like notifications to receivers.
-1. usize tests are those tests that are passing messages of register size to receivers.
-1. big tests are those tests that are passing messages of 4x the size of the register to receivers, for example, 32 bytes(4x8) structure for x64 systems.
+#### Test types:
+1. seq is sequentially writing and reading to a channel in the same thread.
+2. spsc is launching 2 threads, one receiver, and one sender and passing messages between them.
+3. mpsc is launching multiple sender threads with only one receiver.
+4. mpmc is launching the same count of multiple senders and receivers communicating through the same channel altogether.
 
-N/A means that the test subject can't perform the test because of its limitations, for example, some libraries don't have support for size 0 channels or MPMC.
+#### Message types:
+1. empty tests are those tests that are passing zero-sized messages like notifications to receivers.
+2. usize tests are those tests that are passing messages of register size to receivers.
+3. big tests are those tests that are passing messages of 4x the size of the register to receivers, for example, 32 bytes(4x8) structure for x64 systems.
+
+N/A means that the test subject can't perform the test because of its limitations, for example, some libraries don't have support for size 0 channels or MPMC, and Golang does not support unbounded channels too.
 
 Machine: `AMD Ryzen Threadripper 2950X 16-Core Processor`<br />
 Rust: `rustc 1.65.0 (897e37553 2022-11-02)`<br />
 Go: `go version go1.19.3 linux/amd64`<br />
 OS (`uname -a`): `Linux 5.15.0-52-generic #58~20.04.1-Ubuntu SMP Thu Oct 13 13:09:46 UTC 2022 x86_64`<br />
-Date: Nov 11, 2022
+Date: Nov 12, 2022
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
-![Benchmarks](https://i.imgur.com/QK1UOyW.png)
+![Benchmarks](https://i.imgur.com/FBsT34m.png)
 
 #### Why in some tests async is much faster than sync?
 It's because of Tokio's context-switching performance, like Golang, Tokio context-switch in the same thread to the next coroutine when the channel message is ready which is much cheaper than communicating between different threads, It's the same reason why async network applications usually perform better than sync implementations.
