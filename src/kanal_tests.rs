@@ -341,6 +341,7 @@ mod async_tests {
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn new_async<T>(cap: Option<usize>) -> (AsyncSender<T>, AsyncReceiver<T>) {
         match cap {
@@ -534,6 +535,52 @@ mod async_tests {
 
     // Drop tests
     #[tokio::test]
+    async fn async_recv_abort_test() {
+        let (_s, r) = new_async::<DropTester>(Some(10));
+
+        let mut list = Vec::new();
+        for _ in 0..10 {
+            let r = r.clone();
+            let c = tokio::spawn(async move {
+                if r.recv().await.is_ok() {
+                    panic!("should not be ok");
+                }
+            });
+            list.push(c);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        for c in list {
+            c.abort();
+        }
+        r.close();
+    }
+
+    // Drop tests
+    #[tokio::test]
+    async fn async_send_abort_test() {
+        let (s, r) = new_async::<DropTester>(Some(0));
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut list = Vec::new();
+        for _ in 0..10 {
+            let s = s.clone();
+            let counter = counter.clone();
+            let c = tokio::spawn(async move {
+                if s.send(DropTester::new(counter, 1234)).await.is_ok() {
+                    panic!("should not be ok");
+                }
+            });
+            list.push(c);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        for c in list {
+            c.abort();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 10_u64);
+        r.close();
+    }
+
+    #[tokio::test]
     async fn async_drop_test_in_queue() {
         let (s, r) = new_async(Some(10));
 
@@ -542,7 +589,6 @@ mod async_tests {
         for _ in 0..10 {
             let counter = counter.clone();
             let s = s.clone();
-            // does nothing as the SendFuture is not awaited
             let c = tokio::spawn(async move {
                 let _ = s.send(DropTester::new(counter, 1234)).await;
             });
