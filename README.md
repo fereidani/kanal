@@ -57,11 +57,11 @@ Machine: `AMD Ryzen Threadripper 2950X 16-Core Processor`<br />
 Rust: `rustc 1.65.0 (897e37553 2022-11-02)`<br />
 Go: `go version go1.19.3 linux/amd64`<br />
 OS (`uname -a`): `Linux 5.15.0-52-generic #58~20.04.1-Ubuntu SMP Thu Oct 13 13:09:46 UTC 2022 x86_64`<br />
-Date: Nov 12, 2022
+Date: Nov 13, 2022
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
-![Benchmarks](https://i.imgur.com/FBsT34m.png)
+![Benchmarks](https://i.imgur.com/i10Ayjw.png)
 
 #### Why in some tests async is much faster than sync?
 It's because of Tokio's context-switching performance, like Golang, Tokio context-switch in the same thread to the next coroutine when the channel message is ready which is much cheaper than communicating between different threads, It's the same reason why async network applications usually perform better than sync implementations.
