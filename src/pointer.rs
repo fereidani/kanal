@@ -27,6 +27,7 @@ impl<T> KanalPtr<T> {
         }
     }
     /// Creates a KanalPtr from owned object, receiver or creator should take care of dropping data inside ptr.
+    #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) fn new_owned(d: T) -> Self {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
@@ -48,6 +49,7 @@ impl<T> KanalPtr<T> {
     }
     /// Creates a KanalPtr without checking or transforming the pointer to correct KanalPtr format,
     /// Caller should take uf being sure that provided address is in correct KanalPtr format
+    #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) fn new_unchecked(addr: *mut T) -> Self {
         Self((addr).into())
