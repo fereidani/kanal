@@ -21,9 +21,9 @@ This library focuses on bringing both sync and async API together to unify messa
 **Performance is the main goal of Kanal.**
 
 ## Why Kanal is faster?
-1. Kanal is using direct memory access to copy objects from the stack of the sender or write to the stack of the receiver the same as Golang, this eliminates any heap allocation need for bounded(0) channels and also reduces stack allocation substantially too.
+1. Kanal is using a highly optimized composite method to transfer the object. when the data size is less or equal to the pointer size it serializes the data itself as the pointer value and when the data size is bigger than the pointer size it uses the same strategy as Golang and uses direct memory access to copy objects from the stack of the sender or write to the stack of the receiver. This composite method eliminates unnecessary pointer access and all heap allocations for bounded(0) channels and also reduces stack allocation substantially too.
 2. Kanal is using specially tuned mutex for its channel lock, it is possible because the channel's internal lock time is predictable. That said the mutex is implemented with eventual fairness.
-3. Rust amazing compiler
+3. Rust amazing compiler!
 
 ## Why use Kanal?
 
