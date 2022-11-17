@@ -11,6 +11,8 @@ mod future;
 #[cfg(feature = "async")]
 pub use future::*;
 
+pub(crate) mod pointer;
+
 mod error;
 pub use error::*;
 
@@ -21,6 +23,7 @@ mod signal;
 pub(crate) mod state;
 
 use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
+use pointer::KanalPtr;
 
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
@@ -28,9 +31,7 @@ use std::time::{Duration, Instant};
 use std::fmt;
 use std::fmt::Debug;
 
-#[cfg(feature = "async")]
-use signal::AsyncSignal;
-use signal::SyncSignal;
+use signal::*;
 
 /// Sending side of the channel in sync mode.
 /// Senders can be cloned and produce senders to operate in both sync and async modes.
@@ -288,7 +289,7 @@ macro_rules! shared_send_impl {
 
         /// Tries sending to the channel without waiting on the waitlist, if send fails then the object will be dropped.
         /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
-        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.\
+        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.
         /// # Examples
         ///
         /// ```
@@ -580,7 +581,7 @@ impl<T> Sender<T> {
         } else {
             // send directly to the waitlist
             let _data_address_holder = &data; // pin to address
-            let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
+            let sig = SyncSignal::new(KanalPtr::new_from(&mut data), std::thread::current());
             let _sig_address_holder = &sig;
             internal.push_send(sig.as_signal());
             drop(internal);
@@ -635,7 +636,7 @@ impl<T> Sender<T> {
         } else {
             // send directly to the waitlist
             let _data_address_holder = &data; // pin to address
-            let sig = SyncSignal::new(&mut data as *mut T, std::thread::current());
+            let sig = SyncSignal::new(KanalPtr::new_from(&mut data), std::thread::current());
             let _sig_address_holder = &sig;
             internal.push_send(sig.as_signal());
             drop(internal);
@@ -708,7 +709,7 @@ impl<T> Sender<T> {
             // send directly to the waitlist
             let mut d = data.take().unwrap();
             let _data_address_holder = &d; // pin to address
-            let sig = SyncSignal::new(&mut d as *mut T, std::thread::current());
+            let sig = SyncSignal::new(KanalPtr::new_from(&mut d), std::thread::current());
             let _sig_address_holder = &sig;
             internal.push_send(sig.as_signal());
             drop(internal);
@@ -764,11 +765,20 @@ impl<T> AsyncSender<T> {
     /// ```
     #[inline(always)]
     pub fn send(&'_ self, data: T) -> SendFuture<'_, T> {
-        SendFuture {
-            state: FutureState::Zero,
-            internal: &self.internal,
-            sig: AsyncSignal::new(),
-            data: MaybeUninit::new(data),
+        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            SendFuture {
+                state: FutureState::Zero,
+                internal: &self.internal,
+                sig: AsyncSignal::new(),
+                data: MaybeUninit::new(data),
+            }
+        } else {
+            SendFuture {
+                state: FutureState::Zero,
+                internal: &self.internal,
+                sig: AsyncSignal::new_inside_ptr(KanalPtr::new_owned(data)),
+                data: MaybeUninit::uninit(),
+            }
         }
     }
     shared_send_impl!();
@@ -859,18 +869,25 @@ impl<T> Receiver<T> {
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
             let _ret_address_holder = &ret;
-            {
-                let sig = SyncSignal::new(ret.as_mut_ptr(), std::thread::current());
-                let _sig_address_holder = &sig;
-                internal.push_recv(sig.as_signal());
-                drop(internal);
 
-                if !sig.wait() {
-                    return Err(ReceiveError::Closed);
-                }
+            let sig = SyncSignal::new(
+                KanalPtr::new_write_address_ptr(ret.as_mut_ptr()),
+                std::thread::current(),
+            );
+            let _sig_address_holder = &sig;
+            internal.push_recv(sig.as_signal());
+            drop(internal);
+
+            if !sig.wait() {
+                return Err(ReceiveError::Closed);
             }
+
             // Safety: it's safe to assume init as data is forgotten on another side
-            Ok(unsafe { ret.assume_init() })
+            if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+                Ok(unsafe { ret.assume_init() })
+            } else {
+                Ok(unsafe { sig.assume_init() })
+            }
         }
         // if the queue is not empty send the data
     }
@@ -903,29 +920,35 @@ impl<T> Receiver<T> {
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
             let _ret_address_holder = &ret;
-            {
-                let sig = SyncSignal::new(ret.as_mut_ptr() as *mut T, std::thread::current());
-                let _sig_address_holder = &sig;
-                internal.push_recv(sig.as_signal());
-                drop(internal);
-                if !sig.wait_timeout(deadline) {
-                    if sig.is_terminated() {
-                        return Err(ReceiveErrorTimeout::Closed);
+
+            let sig = SyncSignal::new(
+                KanalPtr::new_write_address_ptr(ret.as_mut_ptr()),
+                std::thread::current(),
+            );
+            let _sig_address_holder = &sig;
+            internal.push_recv(sig.as_signal());
+            drop(internal);
+            if !sig.wait_timeout(deadline) {
+                if sig.is_terminated() {
+                    return Err(ReceiveErrorTimeout::Closed);
+                }
+                {
+                    let mut internal = acquire_internal(&self.internal);
+                    if internal.cancel_recv_signal(sig.as_signal()) {
+                        return Err(ReceiveErrorTimeout::Timeout);
                     }
-                    {
-                        let mut internal = acquire_internal(&self.internal);
-                        if internal.cancel_recv_signal(sig.as_signal()) {
-                            return Err(ReceiveErrorTimeout::Timeout);
-                        }
-                    }
-                    // removing receive failed to wait for the signal response
-                    if !sig.wait() {
-                        return Err(ReceiveErrorTimeout::Closed);
-                    }
+                }
+                // removing receive failed to wait for the signal response
+                if !sig.wait() {
+                    return Err(ReceiveErrorTimeout::Closed);
                 }
             }
             // Safety: it's safe to assume init as data is forgotten on another side
-            Ok(unsafe { ret.assume_init() })
+            if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+                Ok(unsafe { ret.assume_init() })
+            } else {
+                Ok(unsafe { sig.assume_init() })
+            }
         }
         // if the queue is not empty send the data
     }

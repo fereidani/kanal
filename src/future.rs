@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     internal::{acquire_internal, Internal},
+    pointer::KanalPtr,
     signal::AsyncSignal,
     state, ReceiveError, SendError,
 };
@@ -56,9 +57,31 @@ pin_project! {
                 // signal is canceled, or in zero stated, drop data locally
                 if needs_drop::<T>(){
                     // Safety: data is not moved it's safe to drop it
-                    unsafe{this.data.assume_init_drop()};
+                    unsafe {
+                        this.drop_local_data();
+                    }
                 }
             }
+        }
+    }
+}
+
+impl<'a, T> SendFuture<'a, T> {
+    #[inline(always)]
+    unsafe fn read_local_data(&self) -> T {
+        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            // if its smaller than register size, it does not need pointer setup as data will be stored in register address object
+            std::ptr::read(self.data.as_ptr())
+        } else {
+            self.sig.read_kanal_ptr()
+        }
+    }
+    #[inline(always)]
+    unsafe fn drop_local_data(&mut self) {
+        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            unsafe { self.data.assume_init_drop() };
+        } else {
+            unsafe { self.sig.read_and_drop_ptr() };
         }
     }
 }
@@ -67,8 +90,8 @@ impl<'a, T> Future for SendFuture<'a, T> {
     type Output = Result<(), SendError>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.as_mut().project();
 
         match *this.state {
             FutureState::Zero => {
@@ -76,10 +99,14 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 if internal.recv_count == 0 {
                     let send_count = internal.send_count;
                     drop(internal);
-                    // the data failed to move, drop it locally
-                    // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
-                    unsafe { this.data.assume_init_drop() };
                     *this.state = FutureState::Done;
+                    if needs_drop::<T>() {
+                        // the data failed to move, drop it locally
+                        // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                        unsafe {
+                            self.drop_local_data();
+                        }
+                    }
                     if send_count == 0 {
                         return Poll::Ready(Err(SendError::Closed));
                     }
@@ -87,19 +114,23 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
-                    unsafe { first.send(std::ptr::read(this.data.as_mut_ptr())) }
                     *this.state = FutureState::Done;
+                    // Safety: data is inited and available from constructor
+                    unsafe { first.send(self.read_local_data()) }
                     Poll::Ready(Ok(()))
                 } else if internal.queue.len() < internal.capacity {
-                    internal
-                        .queue
-                        .push_back(unsafe { std::ptr::read(this.data.as_mut_ptr()) });
-                    drop(internal);
                     *this.state = FutureState::Done;
+                    // Safety: data is inited and available from constructor
+                    internal.queue.push_back(unsafe { self.read_local_data() });
+                    drop(internal);
                     Poll::Ready(Ok(()))
                 } else {
                     *this.state = FutureState::Waiting;
-                    this.sig.set_ptr(this.data.as_mut_ptr());
+                    // if T is smaller than register size, we already have data in pointer address from initialization step
+                    if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+                        this.sig
+                            .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
+                    }
                     this.sig.register(cx.waker());
                     // send directly to the waitlist
                     internal.push_send(this.sig.as_signal());
@@ -117,9 +148,11 @@ impl<'a, T> Future for SendFuture<'a, T> {
                             if v == state::UNLOCKED {
                                 return Poll::Ready(Ok(()));
                             }
-                            // the data failed to move, drop it locally
-                            // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
-                            unsafe { this.data.assume_init_drop() };
+                            if needs_drop::<T>() {
+                                // the data failed to move, drop it locally
+                                // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                                unsafe { self.drop_local_data() };
+                            }
                             Poll::Ready(Err(SendError::Closed))
                         }
                         Poll::Pending => Poll::Pending,
@@ -143,7 +176,11 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     }
                     // the data failed to move, drop it locally
                     // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
-                    unsafe { this.data.assume_init_drop() };
+                    if needs_drop::<T>() {
+                        unsafe {
+                            self.drop_local_data();
+                        }
+                    }
                     Poll::Ready(Err(SendError::Closed))
                 }
             }
@@ -174,7 +211,10 @@ pin_project! {
                     if this.sig.wait_indefinitely() == state::UNLOCKED {
                         // got ownership of data that is not going to be used ever again, so drop it
                         if needs_drop::<T>(){
-                            unsafe { std::ptr::drop_in_place(this.data.as_mut_ptr()) }
+                            // Safety: data is not moved it's safe to drop it
+                            unsafe {
+                                this.drop_local_data();
+                            }
                         }
                     }
                 }
@@ -183,12 +223,32 @@ pin_project! {
     }
 }
 
+impl<'a, T> ReceiveFuture<'a, T> {
+    #[inline(always)]
+    unsafe fn read_local_data(&self) -> T {
+        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            // if T is smaller than register size, it does not need pointer setup as data will be stored in register address object
+            std::ptr::read(self.data.as_ptr())
+        } else {
+            self.sig.read_kanal_ptr()
+        }
+    }
+    #[inline(always)]
+    unsafe fn drop_local_data(&mut self) {
+        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            self.data.assume_init_drop()
+        } else {
+            self.sig.read_and_drop_ptr()
+        }
+    }
+}
+
 impl<'a, T> Future for ReceiveFuture<'a, T> {
     type Output = Result<T, ReceiveError>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.as_mut().project();
         match this.state {
             FutureState::Zero => {
                 let mut internal = acquire_internal(this.internal);
@@ -214,7 +274,11 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         return Poll::Ready(Err(ReceiveError::SendClosed));
                     }
                     *this.state = FutureState::Waiting;
-                    this.sig.set_ptr(this.data.as_mut_ptr());
+                    if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+                        // if type T smaller than register size, it does not need pointer setup as data will be stored in register address object
+                        this.sig
+                            .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
+                    }
                     this.sig.register(cx.waker());
                     // no active waiter so push to the queue
                     internal.push_recv(this.sig.as_signal());
@@ -230,13 +294,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         Poll::Ready(v) => {
                             *this.state = FutureState::Done;
                             if v == state::UNLOCKED {
-                                if std::mem::size_of::<T>() == 0 {
-                                    return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
-                                } else {
-                                    return Poll::Ready(Ok(unsafe {
-                                        std::ptr::read(this.data.as_mut_ptr())
-                                    }));
-                                }
+                                return Poll::Ready(Ok(unsafe { self.read_local_data() }));
                             }
                             Poll::Ready(Err(ReceiveError::Closed))
                         }
@@ -256,13 +314,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
                     //   we can wait synchronously and receive it.
                     if this.sig.wait_indefinitely() == state::UNLOCKED {
-                        if std::mem::size_of::<T>() == 0 {
-                            return Poll::Ready(Ok(unsafe { std::mem::zeroed() }));
-                        } else {
-                            return Poll::Ready(Ok(unsafe {
-                                std::ptr::read(this.data.as_mut_ptr())
-                            }));
-                        }
+                        return Poll::Ready(Ok(unsafe { self.read_local_data() }));
                     }
                     Poll::Ready(Err(ReceiveError::Closed))
                 }

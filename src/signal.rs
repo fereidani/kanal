@@ -1,3 +1,4 @@
+use crate::pointer::KanalPtr;
 use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
 use std::marker::PhantomData;
 use std::thread::Thread;
@@ -6,7 +7,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
     state: State,
-    data: *mut T,
+    ptr: KanalPtr<T>,
     waker: Option<std::task::Waker>,
     phantum: PhantomData<Box<T>>,
 }
@@ -35,28 +36,6 @@ impl<T> std::future::Future for AsyncSignal<T> {
     }
 }
 
-/// Reads the pointer value for types with a size bigger than zero, in the case of zero-sized types returns std::mem::zeroed
-#[inline(always)]
-unsafe fn read_ptr<T>(ptr: *const T) -> T {
-    if std::mem::size_of::<T>() > 0 {
-        std::ptr::read(ptr)
-    } else {
-        // for zero types
-        std::mem::zeroed()
-    }
-}
-
-/// moves data to ptr location, ptr can be invalid memory location if type is zero-sized
-#[cfg(feature = "async")]
-#[inline(always)]
-unsafe fn move_to_ptr<T>(ptr: *mut T, d: T) {
-    if std::mem::size_of::<T>() > 0 {
-        std::ptr::write(ptr, d);
-    } else {
-        std::mem::forget(d);
-    }
-}
-
 #[cfg(feature = "async")]
 impl<T> AsyncSignal<T> {
     /// Signal to send data to a writer
@@ -64,20 +43,42 @@ impl<T> AsyncSignal<T> {
     pub fn new() -> Self {
         let e = Self {
             state: Default::default(),
-            data: std::ptr::null_mut(),
+            ptr: Default::default(),
             waker: Default::default(),
             phantum: PhantomData,
         };
         e.state.store(LOCKED);
         e
     }
-
+    /// Signal to send data to a writer for specific kanal pointer
+    #[inline(always)]
+    pub(crate) fn new_inside_ptr(ptr: KanalPtr<T>) -> Self {
+        let e = Self {
+            state: Default::default(),
+            ptr,
+            waker: Default::default(),
+            phantum: PhantomData,
+        };
+        e.state.store(LOCKED);
+        e
+    }
     /// Set pointer to data for receiving or sending
     #[inline(always)]
-    pub fn set_ptr(&mut self, data_ptr: *mut T) {
-        if std::mem::size_of::<T>() > 0 {
-            self.data = data_ptr;
-        }
+    pub(crate) fn set_ptr(&mut self, ptr: KanalPtr<T>) {
+        self.ptr = ptr;
+    }
+
+    /// Drops data inside pointer
+    #[inline(always)]
+    pub unsafe fn read_and_drop_ptr(&self) {
+        let o = self.ptr.read();
+        drop(o);
+    }
+
+    /// Read data from kanal ptr. should not be called from anyone but creator of signal.
+    #[inline(always)]
+    pub unsafe fn read_kanal_ptr(&self) -> T {
+        self.ptr.read()
     }
 
     /// Convert async signal to common signal that works with channel internal
@@ -91,7 +92,7 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
-            move_to_ptr((*this).data, d);
+            (*this).ptr.write(d);
         }
         let waker = AsyncSignal::clone_waker(this);
         (*this).state.store(UNLOCKED);
@@ -104,7 +105,7 @@ impl<T> AsyncSignal<T> {
     pub unsafe fn recv(this: *const Self) -> T {
         if std::mem::size_of::<T>() > 0 {
             let waker = AsyncSignal::clone_waker(this);
-            let r = read_ptr((*this).data);
+            let r = (*this).ptr.read();
             (*this).state.store(UNLOCKED);
             waker.wake();
             r
@@ -139,6 +140,7 @@ impl<T> AsyncSignal<T> {
 
     /// Checks if provided waker wakes the same task
     #[cfg(feature = "async")]
+    #[inline(always)]
     pub fn will_wake(&self, waker: &std::task::Waker) -> bool {
         self.waker.as_ref().unwrap().will_wake(waker)
     }
@@ -154,7 +156,7 @@ impl<T> AsyncSignal<T> {
 
 pub struct SyncSignal<T> {
     state: State,
-    ptr: *mut T,
+    ptr: KanalPtr<T>,
     thread: Thread,
     phantum: PhantomData<Box<T>>,
 }
@@ -166,7 +168,7 @@ unsafe impl<T> Sync for SyncSignal<T> {}
 impl<T> SyncSignal<T> {
     /// Returns new sync signal for the provided thread
     #[inline(always)]
-    pub fn new(ptr: *mut T, thread: Thread) -> Self {
+    pub(crate) fn new(ptr: KanalPtr<T>, thread: Thread) -> Self {
         let e = SyncSignal {
             state: Default::default(),
             ptr,
@@ -176,6 +178,13 @@ impl<T> SyncSignal<T> {
 
         e.state.lock();
         e
+    }
+
+    /// Drops data inside kanal pointer
+    #[inline(always)]
+    pub unsafe fn read_and_drop_ptr(&mut self) {
+        let o = self.ptr.read();
+        drop(o);
     }
 
     /// Convert sync signal to common signal that works with channel internal
@@ -190,7 +199,7 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
         if std::mem::size_of::<T>() > 0 {
-            std::ptr::write((*this).ptr, d);
+            (*this).ptr.write(d);
         }
         if !(*this).state.unlock() {
             // Clone the thread because this.thread might get destroyed after force_unlock
@@ -207,7 +216,7 @@ impl<T> SyncSignal<T> {
     /// Safety: it's only safe to call on send signals that are not terminated
     #[inline(always)]
     pub unsafe fn recv(this: *const Self) -> T {
-        let d = read_ptr((*this).ptr);
+        let d = (*this).ptr.read();
         if !(*this).state.unlock() {
             // Clone the thread because this.thread might get destroyed after force_unlock
             // it's possible during unpark the other thread wakes up faster and drops the thread object
@@ -216,6 +225,12 @@ impl<T> SyncSignal<T> {
             thread.unpark();
         }
         d
+    }
+
+    /// Assumes data inside self.ptr is correct and reads it.
+    #[inline(always)]
+    pub unsafe fn assume_init(&self) -> T {
+        self.ptr.read()
     }
 
     /// Terminates operation and notifies the waiter , shall not be called more than once
