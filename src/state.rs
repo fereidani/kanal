@@ -36,6 +36,7 @@ impl State {
     /// Waits synchronously without putting the thread to sleep until the instant time is reached
     /// this function may return with latency after instant time because of spin loop implementation
     #[inline(always)]
+    #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
         if v < LOCKED {
@@ -60,6 +61,7 @@ impl State {
 
     /// Waits synchronously for the signal in sync mode, it should not be used anywhere except a drop of async future
     #[cfg(feature = "async")]
+    #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_indefinitely(&self) -> u8 {
         let v = self.v.load(Ordering::SeqCst);
         if v < LOCKED {
