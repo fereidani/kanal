@@ -1,4 +1,4 @@
-use std::cell::UnsafeCell;
+use std::{cell::UnsafeCell, mem::MaybeUninit};
 
 /// Kanal Pointer is a structure to move data efficiently between sync and async context.
 /// This mod transfer data with two different ways between threads:
@@ -7,11 +7,11 @@ use std::cell::UnsafeCell;
 /// 2. When data size T is equal or less than pointer size:
 ///     serialize data itself in pointer address, with this action KanalPtr removes one unnecessary memory load operation and improves speed.
 /// This structure is unsafe. KanalPtr should be pinned to memory location or be a member of pinned structure to work correctly.
-pub(crate) struct KanalPtr<T>(UnsafeCell<*mut T>);
+pub(crate) struct KanalPtr<T>(UnsafeCell<MaybeUninit<*mut T>>);
 
 impl<T> Default for KanalPtr<T> {
     fn default() -> Self {
-        Self(UnsafeCell::new(std::ptr::null_mut()))
+        Self(MaybeUninit::new(std::ptr::null_mut()).into())
     }
 }
 
@@ -21,9 +21,9 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) fn new_from(addr: &mut T) -> Self {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
-            Self((addr as *mut T).into())
+            Self(MaybeUninit::new(addr as *mut T).into())
         } else {
-            Self((store_as_kanal_ptr(addr)).into())
+            Self(store_as_kanal_ptr(addr).into())
         }
     }
     /// Creates a KanalPtr from owned object, receiver or creator should take care of dropping data inside ptr.
@@ -33,7 +33,7 @@ impl<T> KanalPtr<T> {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
             panic!("bug: data can't be stored when size of T is bigger than pointer size");
         } else {
-            let ret = Self((store_as_kanal_ptr(&d)).into());
+            let ret = Self(store_as_kanal_ptr(&d).into());
             std::mem::forget(d);
             ret
         }
@@ -42,9 +42,9 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) fn new_write_address_ptr(addr: *mut T) -> Self {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
-            Self((addr).into())
+            Self(MaybeUninit::new(addr).into())
         } else {
-            Self((std::ptr::null_mut() as *mut T).into())
+            Self(MaybeUninit::new(std::ptr::null_mut() as *mut T).into())
         }
     }
     /// Creates a KanalPtr without checking or transforming the pointer to correct KanalPtr format,
@@ -52,17 +52,17 @@ impl<T> KanalPtr<T> {
     #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) fn new_unchecked(addr: *mut T) -> Self {
-        Self((addr).into())
+        Self(MaybeUninit::new(addr).into())
     }
     /// Reads data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
     pub(crate) unsafe fn read(&self) -> T {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
             // Data is actual pointer location
-            read_ptr(*self.0.get())
+            read_ptr((*self.0.get()).assume_init())
         } else if std::mem::size_of::<T>() > 0 {
             // Data is serialized as pointer location, load it from pointer value instead
-            std::mem::transmute_copy(&*self.0.get())
+            restore_from_kanal_ptr(*self.0.get())
         } else {
             // Data is zero sized, return std::mem::zeroed instead of doing any unnecessary action
             std::mem::zeroed()
@@ -73,7 +73,7 @@ impl<T> KanalPtr<T> {
     pub(crate) unsafe fn write(&self, d: T) {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
             // Data cant be stored as pointer value, move it to pointer location
-            move_to_ptr(*self.0.get(), d);
+            move_to_ptr((*self.0.get()).assume_init(), d);
         } else {
             // Data size is less or equal to pointer size, serialize data as pointer address
             *self.0.get() = store_as_kanal_ptr(&d);
@@ -105,14 +105,24 @@ unsafe fn move_to_ptr<T>(ptr: *mut T, d: T) {
 
 /// this function stores data inside ptr in correct protocol format of KanalPtr for T types that are smaller than pointer size
 #[inline(always)]
-fn store_as_kanal_ptr<T>(ptr: *const T) -> *mut T {
-    let mut ret: *mut T = std::ptr::null_mut();
+fn store_as_kanal_ptr<T>(ptr: *const T) -> MaybeUninit<*mut T> {
+    let mut ret = MaybeUninit::new(std::ptr::null_mut());
     unsafe {
-        if std::mem::align_of::<T>() > std::mem::align_of::<*mut T>() {
-            std::ptr::write_unaligned(&mut ret as *mut *mut T as *mut T, std::ptr::read(ptr));
+        if std::mem::align_of::<*mut T>() > std::mem::align_of::<T>() {
+            std::ptr::write_unaligned(ret.as_mut_ptr() as *mut T, std::ptr::read(ptr));
         } else {
-            std::ptr::write(&mut ret as *mut *mut T as *mut T, std::ptr::read(ptr));
+            std::ptr::write(ret.as_mut_ptr() as *mut T, std::ptr::read(ptr));
         }
     }
     ret
+}
+
+/// this function restores data inside ptr in correct protocol format of KanalPtr for T types that are smaller than pointer size
+#[inline(always)]
+unsafe fn restore_from_kanal_ptr<T>(ptr: MaybeUninit<*mut T>) -> T {
+    if std::mem::align_of::<*mut T>() > std::mem::align_of::<T>() {
+        std::ptr::read_unaligned(ptr.as_ptr() as *const T)
+    } else {
+        std::ptr::read(ptr.as_ptr() as *const T)
+    }
 }
