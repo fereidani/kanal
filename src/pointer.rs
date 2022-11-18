@@ -46,7 +46,7 @@ impl<T> KanalPtr<T> {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
             Self(MaybeUninit::new(addr).into())
         } else {
-            Self(MaybeUninit::new(std::ptr::null_mut() as *mut T).into())
+            Self(MaybeUninit::uninit().into())
         }
     }
     /// Creates a KanalPtr without checking or transforming the pointer to correct KanalPtr format,
@@ -94,7 +94,7 @@ unsafe fn move_to_ptr<T>(ptr: *mut T, d: T) {
 /// this function stores data inside ptr in correct protocol format of KanalPtr for T types that are smaller than pointer size
 #[inline(always)]
 unsafe fn store_as_kanal_ptr<T>(ptr: *const T) -> MaybeUninit<*mut T> {
-    let mut ret = MaybeUninit::new(std::ptr::null_mut());
+    let mut ret = MaybeUninit::uninit();
     if std::mem::size_of::<T>() == 0 {
         return ret;
     }
