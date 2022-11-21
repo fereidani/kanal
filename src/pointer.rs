@@ -11,7 +11,7 @@ pub(crate) struct KanalPtr<T>(UnsafeCell<MaybeUninit<*mut T>>);
 
 impl<T> Default for KanalPtr<T> {
     fn default() -> Self {
-        Self(MaybeUninit::new(std::ptr::null_mut()).into())
+        Self(MaybeUninit::uninit().into())
     }
 }
 
@@ -72,22 +72,12 @@ impl<T> KanalPtr<T> {
     pub(crate) unsafe fn write(&self, d: T) {
         if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
             // Data cant be stored as pointer value, move it to pointer location
-            move_to_ptr((*self.0.get()).assume_init(), d);
+            std::ptr::write((*self.0.get()).assume_init(), d);
         } else {
             // Data size is less or equal to pointer size, serialize data as pointer address
             *self.0.get() = store_as_kanal_ptr(&d);
             std::mem::forget(d);
         }
-    }
-}
-
-/// moves data to ptr location, ptr can be invalid memory location if type is zero-sized
-#[inline(always)]
-unsafe fn move_to_ptr<T>(ptr: *mut T, d: T) {
-    if std::mem::size_of::<T>() > 0 {
-        std::ptr::write(ptr, d);
-    } else {
-        std::mem::forget(d);
     }
 }
 
@@ -98,11 +88,7 @@ unsafe fn store_as_kanal_ptr<T>(ptr: *const T) -> MaybeUninit<*mut T> {
     if std::mem::size_of::<T>() == 0 {
         return ret;
     }
-    if std::mem::align_of::<*mut T>() > std::mem::align_of::<T>() {
-        std::ptr::write_unaligned(ret.as_mut_ptr() as *mut T, std::ptr::read(ptr));
-    } else {
-        std::ptr::write(ret.as_mut_ptr() as *mut T, std::ptr::read(ptr));
-    }
+    std::ptr::copy_nonoverlapping(ptr, ret.as_mut_ptr() as *mut T, 1);
     ret
 }
 
@@ -112,9 +98,5 @@ unsafe fn restore_from_kanal_ptr<T>(ptr: MaybeUninit<*mut T>) -> T {
     if std::mem::size_of::<T>() == 0 {
         return std::mem::zeroed();
     }
-    if std::mem::align_of::<*mut T>() > std::mem::align_of::<T>() {
-        std::ptr::read_unaligned(ptr.as_ptr() as *const T)
-    } else {
-        std::ptr::read(ptr.as_ptr() as *const T)
-    }
+    std::ptr::read(ptr.as_ptr() as *const T)
 }
