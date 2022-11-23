@@ -13,7 +13,7 @@
 [doc-url]: https://docs.rs/kanal
 
 ## What is Kanal
-Kanal is a Rust library to help programmers design effective programs in the CSP model by providing featureful multi-producer multi-consumer channels.
+Kanal is a Rust library to help programmers design effective programs in the [CSP model](https://slikts.github.io/concurrency-glossary/?id=communicating-sequential-processes-csp) by providing featureful multi-producer multi-consumer channels.
 This library focuses on bringing both sync and async API together to unify message passing between sync and async parts of Rust code in a performant manner.
 
 > [Kanal is in pre-release and should not be used in production yet.](https://crates.io/crates/kanal)
