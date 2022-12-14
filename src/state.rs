@@ -20,17 +20,19 @@ pub const UNLOCKED: u8 = 0;
 pub const TERMINATED: u8 = 1;
 pub const LOCKED: u8 = 2;
 pub const LOCKED_STARVATION: u8 = 3;
+
 impl State {
-    /// Returns the current value of State with recommended Ordering
-    #[inline(always)]
-    pub fn value(&self) -> u8 {
-        self.v.load(Ordering::SeqCst)
+    #[inline]
+    pub const fn locked() -> Self {
+        Self {
+            v: AtomicU8::new(LOCKED),
+        }
     }
 
-    /// Stores value with recommended Ordering in State
+    /// Returns the current value of State with recommended Ordering
     #[inline(always)]
-    pub fn store(&self, v: u8) {
-        self.v.store(v, Ordering::SeqCst)
+    pub fn value(&self, ordering: Ordering) -> u8 {
+        self.v.load(ordering)
     }
 
     /// Waits synchronously without putting the thread to sleep until the instant time is reached
@@ -38,13 +40,13 @@ impl State {
     #[inline(always)]
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
-        let v = self.v.load(Ordering::SeqCst);
+        let v = self.v.load(Ordering::Acquire);
         if v < LOCKED {
             return v;
         }
         while Instant::now() < until {
             for _ in 0..(1 << 10) {
-                let v = self.v.load(Ordering::SeqCst);
+                let v = self.v.load(Ordering::Acquire);
                 if v < LOCKED {
                     return v;
                 }
@@ -56,19 +58,19 @@ impl State {
                 break;
             }
         }
-        self.v.load(Ordering::SeqCst)
+        self.v.load(Ordering::Acquire)
     }
 
     /// Waits synchronously for the signal in sync mode, it should not be used anywhere except a drop of async future
     #[cfg(feature = "async")]
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_indefinitely(&self) -> u8 {
-        let v = self.v.load(Ordering::SeqCst);
+        let v = self.v.load(Ordering::Acquire);
         if v < LOCKED {
             return v;
         }
         for _ in 0..(1 << 10) {
-            let v = self.v.load(Ordering::SeqCst);
+            let v = self.v.load(Ordering::Acquire);
             if v < LOCKED {
                 return v;
             }
@@ -76,7 +78,7 @@ impl State {
         }
         let mut sleep_time: u64 = 1 << 3;
         loop {
-            let v = self.v.load(Ordering::SeqCst);
+            let v = self.v.load(Ordering::Acquire);
             if v < LOCKED {
                 return v;
             }
@@ -91,29 +93,30 @@ impl State {
     /// Unlocks the state and changes it to a successful state
     #[inline(always)]
     pub unsafe fn unlock(&self) -> bool {
+        // TODO: investigate whether we can weaken the internal orderings even more.
         self.v
-            .compare_exchange(LOCKED, UNLOCKED, Ordering::SeqCst, Ordering::Relaxed)
+            .compare_exchange(LOCKED, UNLOCKED, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
     }
 
     /// Force unlocks the state without checking for the current state
     #[inline(always)]
     pub unsafe fn force_unlock(&self) {
-        self.store(UNLOCKED)
+        self.v.store(UNLOCKED, Ordering::Release)
     }
 
     /// Unlocks the state and changes it to the failed state
     #[inline(always)]
     pub unsafe fn terminate(&self) -> bool {
         self.v
-            .compare_exchange(LOCKED, TERMINATED, Ordering::SeqCst, Ordering::Relaxed)
+            .compare_exchange(LOCKED, TERMINATED, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
     }
 
     /// Force terminates the signal, without checking for the current state of the signal
     #[inline(always)]
     pub unsafe fn force_terminate(&self) {
-        self.store(TERMINATED)
+        self.v.store(TERMINATED, Ordering::Release)
     }
 
     /// Acquire lock for the current thread from the state, should not be used on any part of async because the thread that acquires
@@ -121,7 +124,7 @@ impl State {
     #[inline(always)]
     pub fn lock(&self) -> bool {
         self.v
-            .compare_exchange(UNLOCKED, LOCKED, Ordering::SeqCst, Ordering::Relaxed)
+            .compare_exchange(UNLOCKED, LOCKED, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
     }
 
@@ -132,9 +135,21 @@ impl State {
             .compare_exchange(
                 LOCKED,
                 LOCKED_STARVATION,
-                Ordering::SeqCst,
+                Ordering::AcqRel,
                 Ordering::Relaxed,
             )
             .is_ok()
+    }
+
+    /// Returns whether the state is still in locked modes
+    #[inline]
+    pub fn is_locked(&self) -> bool {
+        self.v.load(Ordering::Acquire) >= LOCKED
+    }
+
+    /// Returns whether the state is terminated by the a successful call to the`terminate` or any call to the `force_terminate` function or not
+    #[inline]
+    pub fn is_terminated(&self) -> bool {
+        self.v.load(Ordering::Acquire) == TERMINATED
     }
 }

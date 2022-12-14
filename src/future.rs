@@ -1,3 +1,4 @@
+use std::mem::size_of;
 use std::{
     future::Future,
     mem::{needs_drop, MaybeUninit},
@@ -69,7 +70,7 @@ pin_project! {
 impl<'a, T> SendFuture<'a, T> {
     #[inline(always)]
     unsafe fn read_local_data(&self) -> T {
-        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+        if size_of::<T>() > size_of::<*mut T>() {
             // if its smaller than register size, it does not need pointer setup as data will be stored in register address object
             std::ptr::read(self.data.as_ptr())
         } else {
@@ -78,7 +79,7 @@ impl<'a, T> SendFuture<'a, T> {
     }
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
-        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+        if size_of::<T>() > size_of::<*mut T>() {
             unsafe { self.data.assume_init_drop() };
         } else {
             unsafe { self.sig.read_and_drop_ptr() };
@@ -127,7 +128,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 } else {
                     *this.state = FutureState::Waiting;
                     // if T is smaller than register size, we already have data in pointer address from initialization step
-                    if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+                    if size_of::<T>() > size_of::<*mut T>() {
                         this.sig
                             .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
                     }
@@ -226,7 +227,7 @@ pin_project! {
 impl<'a, T> ReceiveFuture<'a, T> {
     #[inline(always)]
     unsafe fn read_local_data(&self) -> T {
-        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+        if size_of::<T>() > size_of::<*mut T>() {
             // if T is smaller than register size, it does not need pointer setup as data will be stored in register address object
             std::ptr::read(self.data.as_ptr())
         } else {
@@ -235,7 +236,7 @@ impl<'a, T> ReceiveFuture<'a, T> {
     }
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
-        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+        if size_of::<T>() > size_of::<*mut T>() {
             self.data.assume_init_drop()
         } else {
             self.sig.read_and_drop_ptr()
@@ -274,7 +275,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         return Poll::Ready(Err(ReceiveError::SendClosed));
                     }
                     *this.state = FutureState::Waiting;
-                    if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+                    if size_of::<T>() > size_of::<*mut T>() {
                         // if type T smaller than register size, it does not need pointer setup as data will be stored in register address object
                         this.sig
                             .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));

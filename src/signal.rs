@@ -1,6 +1,8 @@
 use crate::pointer::KanalPtr;
-use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
+use crate::state::{State, LOCKED, LOCKED_STARVATION, UNLOCKED};
 use std::marker::PhantomData;
+use std::sync::atomic::Ordering;
+use std::task::{Poll, Waker};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
@@ -8,8 +10,8 @@ use std::time::{Duration, Instant};
 pub struct AsyncSignal<T> {
     state: State,
     ptr: KanalPtr<T>,
-    waker: Option<std::task::Waker>,
-    phantum: PhantomData<Box<T>>,
+    waker: Option<Waker>,
+    phantom: PhantomData<Box<T>>,
 }
 
 #[cfg(feature = "async")]
@@ -22,16 +24,12 @@ impl<T> std::future::Future for AsyncSignal<T> {
     fn poll(
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let v = self.state.value();
-        if v < LOCKED {
-            return std::task::Poll::Ready(v);
-        }
-        let v = self.state.value();
-        if v >= LOCKED {
-            std::task::Poll::Pending
+    ) -> Poll<Self::Output> {
+        let val = self.state.value(Ordering::Acquire);
+        if val >= LOCKED {
+            Poll::Pending
         } else {
-            std::task::Poll::Ready(v)
+            Poll::Ready(val)
         }
     }
 }
@@ -41,26 +39,22 @@ impl<T> AsyncSignal<T> {
     /// Signal to send data to a writer
     #[inline(always)]
     pub fn new() -> Self {
-        let e = Self {
-            state: Default::default(),
+        Self {
+            state: State::locked(),
             ptr: Default::default(),
             waker: Default::default(),
-            phantum: PhantomData,
-        };
-        e.state.store(LOCKED);
-        e
+            phantom: PhantomData,
+        }
     }
     /// Signal to send data to a writer for specific kanal pointer
     #[inline(always)]
     pub(crate) fn new_inside_ptr(ptr: KanalPtr<T>) -> Self {
-        let e = Self {
-            state: Default::default(),
+        Self {
+            state: State::locked(),
             ptr,
             waker: Default::default(),
-            phantum: PhantomData,
-        };
-        e.state.store(LOCKED);
-        e
+            phantom: PhantomData,
+        }
     }
     /// Set pointer to data for receiving or sending
     #[inline(always)]
@@ -91,11 +85,9 @@ impl<T> AsyncSignal<T> {
     /// Safety: it's only safe to call on receive signals that are not terminated
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
-        if std::mem::size_of::<T>() > 0 {
-            (*this).ptr.write(d);
-        }
+        (*this).ptr.write(d);
         let waker = AsyncSignal::clone_waker(this);
-        (*this).state.store(UNLOCKED);
+        (*this).state.force_unlock();
         waker.wake();
     }
 
@@ -103,18 +95,11 @@ impl<T> AsyncSignal<T> {
     /// Safety: it's only safe to call on send signals that are not terminated
     #[inline(always)]
     pub unsafe fn recv(this: *const Self) -> T {
-        if std::mem::size_of::<T>() > 0 {
-            let waker = AsyncSignal::clone_waker(this);
-            let r = (*this).ptr.read();
-            (*this).state.store(UNLOCKED);
-            waker.wake();
-            r
-        } else {
-            let waker = AsyncSignal::clone_waker(this);
-            (*this).state.store(UNLOCKED);
-            waker.wake();
-            std::mem::zeroed()
-        }
+        let waker = AsyncSignal::clone_waker(this);
+        let r = (*this).ptr.read();
+        (*this).state.force_unlock();
+        waker.wake();
+        r
     }
 
     /// Terminates operation and notifies the waiter , shall not be called more than once
@@ -122,7 +107,7 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
         let waker = AsyncSignal::clone_waker(this);
-        (*this).state.store(TERMINATED);
+        (*this).state.force_terminate();
         waker.wake();
     }
 
@@ -134,14 +119,14 @@ impl<T> AsyncSignal<T> {
     /// Register waker for async
     #[cfg(feature = "async")]
     #[inline(always)]
-    pub fn register(&mut self, waker: &std::task::Waker) {
+    pub fn register(&mut self, waker: &Waker) {
         self.waker = Some(waker.clone())
     }
 
     /// Checks if provided waker wakes the same task
     #[cfg(feature = "async")]
     #[inline(always)]
-    pub fn will_wake(&self, waker: &std::task::Waker) -> bool {
+    pub fn will_wake(&self, waker: &Waker) -> bool {
         self.waker.as_ref().unwrap().will_wake(waker)
     }
 
@@ -149,7 +134,7 @@ impl<T> AsyncSignal<T> {
     /// Safety: only safe to call if signal is on waiting state.
     #[inline(always)]
     #[cfg(feature = "async")]
-    unsafe fn clone_waker(this: *const Self) -> std::task::Waker {
+    unsafe fn clone_waker(this: *const Self) -> Waker {
         (*this).waker.as_ref().unwrap().clone()
     }
 }
@@ -158,7 +143,7 @@ pub struct SyncSignal<T> {
     state: State,
     ptr: KanalPtr<T>,
     thread: Thread,
-    phantum: PhantomData<Box<T>>,
+    phantom: PhantomData<Box<T>>,
 }
 
 unsafe impl<T> Send for SyncSignal<T> {}
@@ -169,15 +154,12 @@ impl<T> SyncSignal<T> {
     /// Returns new sync signal for the provided thread
     #[inline(always)]
     pub(crate) fn new(ptr: KanalPtr<T>, thread: Thread) -> Self {
-        let e = SyncSignal {
-            state: Default::default(),
+        SyncSignal {
+            state: State::locked(),
             ptr,
             thread,
-            phantum: PhantomData,
-        };
-
-        e.state.lock();
-        e
+            phantom: PhantomData,
+        }
     }
 
     /// Drops data inside kanal pointer
@@ -198,9 +180,7 @@ impl<T> SyncSignal<T> {
     /// Safety: it's only safe to call on receive signals that are not terminated
     #[inline(always)]
     pub unsafe fn send(this: *const Self, d: T) {
-        if std::mem::size_of::<T>() > 0 {
-            (*this).ptr.write(d);
-        }
+        (*this).ptr.write(d);
         if !(*this).state.unlock() {
             // Clone the thread because this.thread might get destroyed after force_unlock
             // it's possible during unpark the other thread wakes up faster and drops the thread object
@@ -252,7 +232,7 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
-        let until = Instant::now() + Duration::from_nanos(1 << 18); //about 0.26ms
+        let until = Instant::now() + Duration::from_nanos(1 << 18); // about 0.26ms
         let mut v = self.state.wait_unlock_until(until);
 
         if v < LOCKED {
@@ -263,10 +243,10 @@ impl<T> SyncSignal<T> {
             v = LOCKED_STARVATION;
             while v == LOCKED_STARVATION {
                 std::thread::park();
-                v = self.state.value();
+                v = self.state.value(Ordering::Acquire);
             }
         } else {
-            v = self.state.value();
+            v = self.state.value(Ordering::Acquire);
         }
         v == UNLOCKED
     }
@@ -279,14 +259,15 @@ impl<T> SyncSignal<T> {
     }
 
     /// Returns whether the state of the signal is still in locked modes
+    #[inline]
     pub fn is_locked(&self) -> bool {
-        self.state.value() >= LOCKED
+        self.state.is_locked()
     }
 
-    /// Returns whether the signal is terminated by the terminate() function or not
+    /// Returns whether the signal is terminated by the `terminate` function or not
     #[inline(always)]
     pub fn is_terminated(&self) -> bool {
-        self.state.value() == TERMINATED
+        self.state.is_terminated()
     }
 }
 
