@@ -10,6 +10,21 @@ use std::sync::{
     Arc,
 };
 
+#[derive(PartialEq, Eq, Debug)]
+struct Padded {
+    a: bool,
+    b: u8,
+    c: u32,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+#[repr(C)]
+struct PaddedReprC {
+    a: bool,
+    b: u8,
+    c: u32,
+}
+
 struct DropTester {
     i: usize,
     dropped: bool,
@@ -45,7 +60,7 @@ impl DropTester {
 
 #[cfg(test)]
 mod tests {
-    use crate::kanal_tests::{DropTester, MESSAGES, THREADS};
+    use crate::kanal_tests::*;
     use crate::{bounded, unbounded, ReceiveError, Receiver, SendError, Sender};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -106,6 +121,21 @@ mod tests {
         };
     }
 
+    macro_rules! integrity_test {
+        ($zero:expr,$ones:expr) => {
+            let (tx, rx) = new(Some(0));
+            crossbeam::scope(|scope| {
+                scope.spawn(|_| {
+                    tx.send($zero).unwrap();
+                    tx.send($ones).unwrap();
+                });
+                assert_eq!(rx.recv().unwrap(), $zero);
+                assert_eq!(rx.recv().unwrap(), $ones);
+            })
+            .unwrap();
+        };
+    }
+
     fn mpsc(cap: Option<usize>) {
         let (tx, rx) = new(cap);
 
@@ -152,6 +182,68 @@ mod tests {
             }
         })
         .unwrap();
+    }
+
+    #[test]
+    fn integrity_u8() {
+        integrity_test!(0u8, !0u8);
+    }
+
+    #[test]
+    fn integrity_u16() {
+        integrity_test!(0u16, !0u16);
+    }
+
+    #[test]
+    fn integrity_u32() {
+        integrity_test!(0u32, !0u32);
+    }
+
+    #[test]
+    fn integrity_u64() {
+        integrity_test!(0u64, !0u64);
+    }
+
+    #[test]
+    fn integrity_big() {
+        integrity_test!((0u64, 0u64, 0u64, 0u64), (!0u64, !0u64, !0u64, !0u64));
+    }
+
+    #[test]
+    fn integrity_big_tail() {
+        integrity_test!((0u64, 0u64, 0u64, 0u8), (!0u64, !0u64, !0u64, !0u8));
+    }
+
+    #[test]
+    fn integrity_padded_rust() {
+        integrity_test!(
+            Padded {
+                a: false,
+                b: 0x0,
+                c: 0x0
+            },
+            Padded {
+                a: true,
+                b: 0xFF,
+                c: 0xFFFFFFFF
+            }
+        );
+    }
+
+    #[test]
+    fn integrity_padded_c() {
+        integrity_test!(
+            PaddedReprC {
+                a: false,
+                b: 0x0,
+                c: 0x0
+            },
+            PaddedReprC {
+                a: true,
+                b: 0xFF,
+                c: 0xFFFFFFFF
+            }
+        );
     }
 
     #[test]
@@ -335,10 +427,13 @@ mod tests {
 #[cfg(feature = "async")]
 #[cfg(test)]
 mod async_tests {
-    use crate::kanal_tests::{DropTester, MESSAGES, THREADS};
+    use futures_core::FusedStream;
+
+    use crate::kanal_tests::*;
     use crate::{
         bounded_async, unbounded_async, AsyncReceiver, AsyncSender, ReceiveError, SendError,
     };
+
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -378,6 +473,18 @@ mod async_tests {
             for h in list {
                 h.await.unwrap();
             }
+        };
+    }
+
+    macro_rules! integrity_test {
+        ($zero:expr,$ones:expr) => {
+            let (tx, rx) = new_async(Some(0));
+            tokio::spawn(async move {
+                tx.send($zero).await.unwrap();
+                tx.send($ones).await.unwrap();
+            });
+            assert_eq!(rx.recv().await.unwrap(), $zero);
+            assert_eq!(rx.recv().await.unwrap(), $ones);
         };
     }
 
@@ -456,6 +563,63 @@ mod async_tests {
         for h in list {
             h.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn integrity_u8() {
+        integrity_test!(0u8, !0u8);
+    }
+
+    #[tokio::test]
+    async fn integrity_u16() {
+        integrity_test!(0u16, !0u16);
+    }
+
+    #[tokio::test]
+    async fn integrity_u32() {
+        integrity_test!(0u32, !0u32);
+    }
+
+    #[tokio::test]
+    async fn integrity_u64() {
+        integrity_test!(0u64, !0u64);
+    }
+
+    #[tokio::test]
+    async fn integrity_big() {
+        integrity_test!((0u64, 0u64, 0u64, 0u64), (!0u64, !0u64, !0u64, !0u64));
+    }
+
+    #[tokio::test]
+    async fn integrity_padded_rust() {
+        integrity_test!(
+            Padded {
+                a: false,
+                b: 0x0,
+                c: 0x0
+            },
+            Padded {
+                a: true,
+                b: 0xFF,
+                c: 0xFFFFFFFF
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn integrity_padded_c() {
+        integrity_test!(
+            PaddedReprC {
+                a: false,
+                b: 0x0,
+                c: 0x0
+            },
+            PaddedReprC {
+                a: true,
+                b: 0xFF,
+                c: 0xFFFFFFFF
+            }
+        );
     }
 
     #[tokio::test]
@@ -706,6 +870,26 @@ mod async_tests {
     #[tokio::test]
     async fn async_seq_u() {
         async_mpsc(None).await;
+    }
+
+    #[tokio::test]
+    async fn async_stream() {
+        use futures::stream::StreamExt;
+        let (s, r) = new_async(Some(0));
+        tokio::spawn(async move {
+            for i in 0..MESSAGES {
+                s.send(i).await.unwrap();
+            }
+        });
+        let mut stream = r.stream();
+
+        assert!(!stream.is_terminated());
+        for i in 0..MESSAGES {
+            assert_eq!(stream.next().await.unwrap(), i);
+        }
+        assert_eq!(stream.next().await, None);
+        assert!(stream.is_terminated());
+        assert_eq!(stream.next().await, None);
     }
 
     async fn async_two_msg(size: usize) {
