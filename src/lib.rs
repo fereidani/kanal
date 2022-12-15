@@ -1041,6 +1041,7 @@ impl<T> AsyncReceiver<T> {
     ///
     /// # Examples
     /// ```
+    /// # use tokio::{spawn as co};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// // import to be able to use stream.next() function
     /// use futures::stream::StreamExt;
@@ -1052,16 +1053,15 @@ impl<T> AsyncReceiver<T> {
     ///     for i in 0..100 {
     ///         s.send(i).await.unwrap();
     ///     }
-    /// })
+    /// });
     /// let mut stream = r.stream();
     /// assert!(!stream.is_terminated());
     /// for i in 0..100 {
-    ///     assert_eq!(stream.next().await?, i);
+    ///     assert_eq!(stream.next().await, Some(i));
     /// }
     /// // Stream will return None after it is terminated, and there is no other sender.
     /// assert_eq!(stream.next().await, None);
     /// assert!(stream.is_terminated());
-    /// # anyhow::Ok(())
     /// # });
     /// ```
     #[inline(always)]
