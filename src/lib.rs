@@ -6,6 +6,8 @@
 //!
 //!
 #![warn(missing_docs, missing_debug_implementations)]
+
+pub(crate) mod backoff;
 #[cfg(feature = "async")]
 mod future;
 #[cfg(feature = "async")]
@@ -164,6 +166,21 @@ macro_rules! shared_impl {
         /// ```
         pub fn is_empty(&self) -> bool {
             acquire_internal(&self.internal).queue.is_empty()
+        }
+        /// Returns whether the channel queue is full or not
+        /// full channels will block on send and recv calls
+        /// it always returns true for zero sized channels
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::bounded(1);
+        /// s.send("Hi!").unwrap();
+        /// assert_eq!(s.is_full(),true);
+        /// assert_eq!(r.is_full(),true);
+        /// ```
+        pub fn is_full(&self) -> bool {
+            let internal = acquire_internal(&self.internal);
+            internal.capacity == internal.queue.len()
         }
         /// Returns capacity of channel (not the queue)
         /// for unbounded channels, it will return usize::MAX
@@ -539,6 +556,25 @@ macro_rules! shared_recv_impl {
         /// ```
         pub fn is_disconnected(&self) -> bool {
             acquire_internal(&self.internal).send_count == 0
+        }
+
+        /// Returns, whether the channel receive side is terminated, and will not return any result in future recv calls.
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// s.send(1).unwrap();
+        /// drop(s); // drop sender and disconnect the send side from the channel
+        /// assert_eq!(r.is_disconnected(),true);
+        /// // Also channel is closed from send side, it's not terminated as there is data in channel queue
+        /// assert_eq!(r.is_terminated(),false);
+        /// assert_eq!(r.recv().unwrap(),1);
+        /// // Now channel receive side is terminated as there is no sender for channel and queue is empty
+        /// assert_eq!(r.is_terminated(),true);
+        /// ```
+        pub fn is_terminated(&self) -> bool {
+            let internal = acquire_internal(&self.internal);
+            internal.send_count == 0 && internal.queue.len() == 0
         }
     };
 }
@@ -998,13 +1034,39 @@ impl<T> AsyncReceiver<T> {
     /// ```
     #[inline(always)]
     pub fn recv(&'_ self) -> ReceiveFuture<'_, T> {
-        ReceiveFuture {
-            state: FutureState::Zero,
-            sig: AsyncSignal::new(),
-            internal: &self.internal,
-            // Safety: data is never going to be used before receiving the signal from the sender
-            data: MaybeUninit::uninit(),
-        }
+        ReceiveFuture::new_ref(&self.internal)
+    }
+    /// Creates a asynchronous stream for the channel to receive messages,
+    ///  `ReceiveStream` borrows the receiver, after dropping it, receiver will be available and usable again.
+    ///
+    /// # Examples
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// // import to be able to use stream.next() function
+    /// use futures::stream::StreamExt;
+    /// // import to be able to use stream.is_terminated() function
+    /// use futures::stream::FusedStream;
+    ///
+    /// let (s, r) = kanal::unbounded_async();
+    /// co(async move {
+    ///     for i in 0..100 {
+    ///         s.send(i).await.unwrap();
+    ///     }
+    /// })
+    /// let mut stream = r.stream();
+    /// assert!(!stream.is_terminated());
+    /// for i in 0..100 {
+    ///     assert_eq!(stream.next().await?, i);
+    /// }
+    /// // Stream will return None after it is terminated, and there is no other sender.
+    /// assert_eq!(stream.next().await, None);
+    /// assert!(stream.is_terminated());
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[inline(always)]
+    pub fn stream(&'_ self) -> ReceiveStream<'_, T> {
+        ReceiveStream::new_borrowed(self)
     }
     shared_recv_impl!();
     /// Returns sync cloned version of the receiver
