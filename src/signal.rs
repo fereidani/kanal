@@ -126,6 +126,13 @@ impl<T> AsyncSignal<T> {
         waker.wake();
     }
 
+    /// Loads pointer data and drops it in place
+    /// Safety: it should only be used once, and only when data in ptr is valid and not moved.
+    #[inline(always)]
+    pub unsafe fn load_and_drop(this: *const Self) {
+        let _ = (*this).ptr.read();
+    }
+
     /// Waits for signal and returns true if send/recv operation was successful
     pub fn wait_indefinitely(&self) -> u8 {
         self.state.wait_indefinitely()
@@ -233,6 +240,13 @@ impl<T> SyncSignal<T> {
         self.ptr.read()
     }
 
+    /// Loads pointer data and drops it in place
+    /// Safety: it should only be used once, and only when data in ptr is valid and not moved.
+    #[inline(always)]
+    pub unsafe fn load_and_drop(this: *const Self) {
+        let _ = (*this).ptr.read();
+    }
+
     /// Terminates operation and notifies the waiter , shall not be called more than once
     /// has to be done through a pointer because by the end of this scope
     /// the object might have been destroyed by the owner
@@ -310,27 +324,27 @@ impl<T> Signal<T> {
         match self {
             Signal::Sync(sig) => (**sig).wait(),
             #[cfg(feature = "async")]
-            Signal::Async(_sig) => panic!("async sig: sync wait must not happen"),
+            Signal::Async(_sig) => unreachable!("async sig: sync wait must not happen"),
         }
     }
 
     /// Sends object to receive signal
     /// Safety: it's only safe to be called only once on the receive signals that are not terminated
-    pub unsafe fn send(self, d: T) {
+    pub unsafe fn send(&self, d: T) {
         match self {
-            Signal::Sync(sig) => SyncSignal::send(sig, d),
+            Signal::Sync(sig) => SyncSignal::send(*sig, d),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => AsyncSignal::send(sig, d),
+            Signal::Async(sig) => AsyncSignal::send(*sig, d),
         }
     }
 
     /// Receives object from send signal
     /// Safety: it's only safe to be called only once on send signals that are not terminated
-    pub unsafe fn recv(self) -> T {
+    pub unsafe fn recv(&self) -> T {
         match self {
-            Signal::Sync(sig) => SyncSignal::recv(sig),
+            Signal::Sync(sig) => SyncSignal::recv(*sig),
             #[cfg(feature = "async")]
-            Signal::Async(sig) => AsyncSignal::recv(sig),
+            Signal::Async(sig) => AsyncSignal::recv(*sig),
         }
     }
 
@@ -342,6 +356,23 @@ impl<T> Signal<T> {
             #[cfg(feature = "async")]
             Signal::Async(sig) => AsyncSignal::terminate(*sig),
         }
+    }
+
+    /// Loads pointer data and drops it in place
+    /// Safety: it should only be used once, and only when data in ptr is valid and not moved.
+    pub unsafe fn load_and_drop(&self) {
+        match self {
+            Signal::Sync(sig) => SyncSignal::load_and_drop(*sig),
+            #[cfg(feature = "async")]
+            Signal::Async(sig) => AsyncSignal::load_and_drop(*sig),
+        }
+    }
+}
+
+impl<T> Default for Signal<T> {
+    fn default() -> Self {
+        // Safety: it's not safe to use this signal, it's only a place holder.
+        Signal::Sync(std::ptr::null() as *const SyncSignal<T>)
     }
 }
 
