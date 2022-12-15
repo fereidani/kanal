@@ -5,6 +5,8 @@ use std::{
     time::Instant,
 };
 
+use crate::backoff;
+
 /// The state keeps the state of signals in both sync and async to make eventing for senders and receivers possible
 pub struct State {
     v: AtomicU8,
@@ -38,23 +40,19 @@ impl State {
     #[inline(always)]
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
-        let v = self.v.load(Ordering::SeqCst);
-        if v < LOCKED {
-            return v;
+        for _ in 0..(1 << 8) {
+            let v = self.v.load(Ordering::Relaxed);
+            if v < LOCKED {
+                return v;
+            }
+            backoff::spin_hint();
         }
         while Instant::now() < until {
-            for _ in 0..(1 << 10) {
-                let v = self.v.load(Ordering::SeqCst);
-                if v < LOCKED {
-                    return v;
-                }
-                //std::hint::spin_loop();
-                std::thread::yield_now();
+            let v = self.v.load(Ordering::Relaxed);
+            if v < LOCKED {
+                return v;
             }
-            let remaining_time = until.duration_since(Instant::now());
-            if remaining_time.is_zero() {
-                break;
-            }
+            backoff::yield_now();
         }
         self.v.load(Ordering::SeqCst)
     }
@@ -63,24 +61,20 @@ impl State {
     #[cfg(feature = "async")]
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_indefinitely(&self) -> u8 {
-        let v = self.v.load(Ordering::SeqCst);
-        if v < LOCKED {
-            return v;
-        }
-        for _ in 0..(1 << 10) {
-            let v = self.v.load(Ordering::SeqCst);
+        for _ in 0..(1 << 8) {
+            let v = self.v.load(Ordering::Relaxed);
             if v < LOCKED {
                 return v;
             }
-            std::thread::yield_now();
+            backoff::spin_hint();
         }
-        let mut sleep_time: u64 = 1 << 3;
+        let mut sleep_time: u64 = 1 << 10;
         loop {
-            let v = self.v.load(Ordering::SeqCst);
+            backoff::sleep(Duration::from_nanos(sleep_time));
+            let v = self.v.load(Ordering::Relaxed);
             if v < LOCKED {
                 return v;
             }
-            std::thread::sleep(Duration::from_nanos(sleep_time));
             // increase sleep_time gradually to 262 microseconds
             if sleep_time < (1 << 18) {
                 sleep_time <<= 1;
