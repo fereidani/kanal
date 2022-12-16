@@ -63,7 +63,7 @@ pub fn random() -> usize {
             current,
             // Linear congruential generator
             current.wrapping_mul(1103515245).wrapping_add(12345),
-            Ordering::Release,
+            Ordering::AcqRel,
             Ordering::Acquire,
         ) {
             // Successfully updated current value to next random number, so current value is owned by this thread and valid to use
