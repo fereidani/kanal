@@ -32,7 +32,7 @@ impl State {
     /// Stores value with recommended Ordering in State
     #[inline(always)]
     pub fn store(&self, v: u8) {
-        self.v.store(v, Ordering::SeqCst)
+        self.v.store(v, Ordering::Release)
     }
 
     /// Waits synchronously without putting the thread to sleep until the instant time is reached
@@ -41,14 +41,14 @@ impl State {
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
         for _ in 0..(1 << 8) {
-            let v = self.v.load(Ordering::Relaxed);
+            let v = self.v.load(Ordering::SeqCst);
             if v < LOCKED {
                 return v;
             }
             backoff::spin_hint();
         }
         while Instant::now() < until {
-            let v = self.v.load(Ordering::Relaxed);
+            let v = self.v.load(Ordering::SeqCst);
             if v < LOCKED {
                 return v;
             }
@@ -62,7 +62,7 @@ impl State {
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_indefinitely(&self) -> u8 {
         for _ in 0..(1 << 8) {
-            let v = self.v.load(Ordering::Relaxed);
+            let v = self.v.load(Ordering::SeqCst);
             if v < LOCKED {
                 return v;
             }
@@ -71,7 +71,7 @@ impl State {
         let mut sleep_time: u64 = 1 << 10;
         loop {
             backoff::sleep(Duration::from_nanos(sleep_time));
-            let v = self.v.load(Ordering::Relaxed);
+            let v = self.v.load(Ordering::SeqCst);
             if v < LOCKED {
                 return v;
             }
