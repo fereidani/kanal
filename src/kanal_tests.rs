@@ -126,11 +126,15 @@ mod tests {
             let (tx, rx) = new(Some(0));
             crossbeam::scope(|scope| {
                 scope.spawn(|_| {
-                    tx.send($zero).unwrap();
-                    tx.send($ones).unwrap();
+                    for _ in 0..MESSAGES {
+                        tx.send($zero).unwrap();
+                        tx.send($ones).unwrap();
+                    }
                 });
-                assert_eq!(rx.recv().unwrap(), $zero);
-                assert_eq!(rx.recv().unwrap(), $ones);
+                for _ in 0..MESSAGES {
+                    assert_eq!(rx.recv().unwrap(), $zero);
+                    assert_eq!(rx.recv().unwrap(), $ones);
+                }
             })
             .unwrap();
         };
@@ -480,11 +484,15 @@ mod async_tests {
         ($zero:expr,$ones:expr) => {
             let (tx, rx) = new_async(Some(0));
             tokio::spawn(async move {
-                tx.send($zero).await.unwrap();
-                tx.send($ones).await.unwrap();
+                for _ in 0..MESSAGES {
+                    tx.send($zero).await.unwrap();
+                    tx.send($ones).await.unwrap();
+                }
             });
-            assert_eq!(rx.recv().await.unwrap(), $zero);
-            assert_eq!(rx.recv().await.unwrap(), $ones);
+            for _ in 0..MESSAGES {
+                assert_eq!(rx.recv().await.unwrap(), $zero);
+                assert_eq!(rx.recv().await.unwrap(), $ones);
+            }
         };
     }
 
