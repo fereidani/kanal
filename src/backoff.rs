@@ -1,4 +1,4 @@
-/// Seperate module for backoff strategy.
+/// Separate module for backoff strategy.
 /// The reason of seperating backoff to independent module is that with this approach it is easier
 ///  to test and compare different backoff solutions.
 use std::{
@@ -56,12 +56,22 @@ pub fn random() -> usize {
     static SEED: AtomicUsize = AtomicUsize::new(13);
     // Whole point of alternative solution is to randomize wait time to avoid collision between cpu cores competing to acquire lock,
     // if it does not use acquire release and use relaxed ordering, collided loads will randomize in the exact same time.
-    let next = SEED.load(Ordering::Acquire);
-    SEED.store(
-        next.wrapping_mul(1103515245).wrapping_add(12345),
-        Ordering::Release,
-    );
-    next
+    let mut current = SEED.load(Ordering::Acquire);
+    loop {
+        // try to swap current value with next random number
+        match SEED.compare_exchange(
+            current,
+            // Linear congruential generator
+            current.wrapping_mul(1103515245).wrapping_add(12345),
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            // Successfully updated current value to next random number, so current value is owned by this thread and valid to use
+            Ok(_) => return current,
+            // Failed updating current value, try again with new value
+            Err(new) => current = new,
+        }
+    }
 }
 
 // Randomizes the input 25%
