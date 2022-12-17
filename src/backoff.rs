@@ -2,7 +2,7 @@
 /// The reason of seperating backoff to independent module is that with this approach it is easier
 ///  to test and compare different backoff solutions.
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicU8, Ordering},
     time::Duration,
 };
 
@@ -40,43 +40,38 @@ pub fn spin_wait(count: usize) {
 #[allow(dead_code)]
 #[inline(always)]
 pub fn yield_now() {
-    // This is max acceptable spins for yield
-    // minus 1 turns it to 0b1+ pattern so it is possible to use it with & operations
-    const FILTER: usize = (1 << 8) - 1;
     // This number will be added to the calculate pseudo random to avoid short spins
     const OFFSET: usize = 1 << 6;
-    spin_wait((random() & FILTER).wrapping_add(OFFSET));
+    spin_wait((random_u8() as usize).wrapping_add(OFFSET));
 }
 
-/// Generates a pseudo random number using atomics
+/// Generates a pseudo u8 random number using atomics with LCG like algorithm
+/// This genearator is only suited for special use-case of yield_now, and not recommended for use anywhere else.
 #[allow(dead_code)]
 #[inline(always)]
-pub fn random() -> usize {
+fn random_u8() -> u8 {
     // SEED number is inited with Mathematiclly proven super unlucky number. (I'm kidding, don't file a bug report please)
-    static SEED: AtomicUsize = AtomicUsize::new(13);
-    // Whole point of alternative solution is to randomize wait time to avoid collision between cpu cores competing to acquire lock,
-    // if it does not use acquire release and use relaxed ordering, collided loads will randomize in the exact same time.
-    let mut current = SEED.load(Ordering::Acquire);
-    loop {
-        // try to swap current value with next random number
-        match SEED.compare_exchange(
-            current,
-            // Linear congruential generator
-            current.wrapping_mul(1103515245).wrapping_add(12345),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            // Successfully updated current value to next random number, so current value is owned by this thread and valid to use
-            Ok(_) => return current,
-            // Failed updating current value, try again with new value
-            Err(new) => current = new,
-        }
-    }
+    static SEED: AtomicU8 = AtomicU8::new(13);
+    const MULTIPLIER: u8 = 223;
+    // Increment the seed atomically
+    let seed = SEED.fetch_add(1, Ordering::SeqCst);
+    // Use a LCG like algorithm to generate a random number from the seed
+    seed.wrapping_mul(MULTIPLIER)
+}
+
+/// Generates a pseudo u32 random number using atomics with LCG like algorithm same as random_u8
+#[allow(dead_code)]
+#[inline(always)]
+fn random_u32() -> u32 {
+    static SEED: AtomicU32 = AtomicU32::new(13);
+    const MULTIPLIER: u32 = 1812433253;
+    let seed = SEED.fetch_add(1, Ordering::SeqCst);
+    seed.wrapping_mul(MULTIPLIER)
 }
 
 // Randomizes the input 25%
 #[allow(dead_code)]
 #[inline(always)]
 pub fn randomize(d: usize) -> usize {
-    d + random() % (d >> 2)
+    d + random_u32() as usize % (d >> 2)
 }
