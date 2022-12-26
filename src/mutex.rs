@@ -4,14 +4,14 @@ use std::{
     time::Duration,
 };
 
+use crate::backoff;
+
+const INTIIAL_SPIN_CYCLES: usize = 1 << 3;
+const STRATEGY_SWITCH_THRESHOLD: usize = 4;
+
 pub struct RawMutexLock {
     locked: AtomicBool,
 }
-
-const INITIAL_SLEEP_TIME: usize = 1 << 4;
-const INTIIAL_SPIN_CYCLES: usize = 1 << 12;
-const STRATEGY_SWITCH_THRESHOLD: usize = INITIAL_SLEEP_TIME << 8;
-const MAX_BACKOFF_TIME: usize = 1 << 18; // about 0.26ms
 
 unsafe impl RawMutex for RawMutexLock {
     #[allow(clippy::declare_interior_mutable_const)]
@@ -24,34 +24,29 @@ unsafe impl RawMutex for RawMutexLock {
         if self.try_lock() {
             return;
         }
-        let mut sleep_time = INITIAL_SLEEP_TIME;
-        let mut cycles = INTIIAL_SPIN_CYCLES;
-        loop {
-            if sleep_time < STRATEGY_SWITCH_THRESHOLD {
-                for _ in 0..INITIAL_SLEEP_TIME {
-                    if self.try_lock() {
-                        return;
-                    }
-                    std::thread::yield_now();
-                    //std::hint::spin_loop();
+        for _ in 0..STRATEGY_SWITCH_THRESHOLD {
+            for _ in 0..INTIIAL_SPIN_CYCLES {
+                if self.try_lock() {
+                    return;
                 }
-            } else {
-                // Eventual Fairness: Increase spin cycles by a factor of 2, this gives better chance to long waiting threads to acquire Mutex
-                if cycles < (1 << 31) {
-                    cycles <<= 1;
-                }
-                for _ in 0..cycles {
-                    if self.try_lock() {
-                        return;
-                    }
-                    std::thread::yield_now();
-                    //std::hint::spin_loop();
-                }
+                backoff::spin_hint();
             }
-            std::thread::sleep(Duration::from_nanos(sleep_time as u64));
-            // Increase backoff time by a factor of 2 until we reach maximum backoff time
-            if sleep_time < MAX_BACKOFF_TIME {
-                sleep_time <<= 1
+            // randomize next entry with yield_now
+            backoff::yield_now();
+        }
+        let mut cycles = INTIIAL_SPIN_CYCLES << 1;
+        loop {
+            // Backoff about 0.5ms and try harder next time
+            backoff::sleep(Duration::from_nanos(backoff::randomize(1 << 19) as u64));
+            for _ in 0..cycles {
+                if self.try_lock() {
+                    return;
+                }
+                backoff::spin_hint();
+            }
+            // Eventual Fairness: Increase spin cycles by multipling it by 2, this gives better chance to long waiting threads to acquire Mutex
+            if cycles < (1 << 31) {
+                cycles <<= 1;
             }
         }
     }

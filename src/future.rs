@@ -1,7 +1,7 @@
-use std::mem::size_of;
+use futures_core::{FusedStream, Future, Stream};
 use std::{
-    future::Future,
-    mem::{needs_drop, MaybeUninit},
+    fmt::Debug,
+    mem::{needs_drop, MaybeUninit, size_of},
     pin::Pin,
     task::Poll,
 };
@@ -10,7 +10,7 @@ use crate::{
     internal::{acquire_internal, Internal},
     pointer::KanalPtr,
     signal::AsyncSignal,
-    state, ReceiveError, SendError,
+    state, AsyncReceiver, ReceiveError, SendError,
 };
 
 use pin_project_lite::pin_project;
@@ -68,6 +68,8 @@ pin_project! {
 }
 
 impl<'a, T> SendFuture<'a, T> {
+    /// # Safety
+    /// it's only safe to call this function once and only if send operation will finish after this call.
     #[inline(always)]
     unsafe fn read_local_data(&self) -> T {
         if size_of::<T>() > size_of::<*mut T>() {
@@ -77,12 +79,14 @@ impl<'a, T> SendFuture<'a, T> {
             self.sig.read_kanal_ptr()
         }
     }
+    /// # Safety
+    /// it's only safe to call this function once and only if send operation fails
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
         if size_of::<T>() > size_of::<*mut T>() {
             unsafe { self.data.assume_init_drop() };
         } else {
-            unsafe { self.sig.read_and_drop_ptr() };
+            self.sig.read_and_drop_ptr();
         }
     }
 }
@@ -242,6 +246,21 @@ impl<'a, T> ReceiveFuture<'a, T> {
             self.sig.read_and_drop_ptr()
         }
     }
+
+    #[inline(always)]
+    pub(crate) fn new_ref(internal: &'a Internal<T>) -> Self {
+        Self {
+            state: FutureState::Zero,
+            sig: AsyncSignal::new(),
+            internal,
+            data: MaybeUninit::uninit(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state = FutureState::Zero;
+        self.sig = AsyncSignal::new()
+    }
 }
 
 impl<'a, T> Future for ReceiveFuture<'a, T> {
@@ -323,6 +342,59 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
             _ => {
                 panic!("polled after result is already returned")
             }
+        }
+    }
+}
+
+/// Receive stream
+pub struct ReceiveStream<'a, T: 'a> {
+    future: ReceiveFuture<'a, T>,
+    terminated: bool,
+    receiver: &'a AsyncReceiver<T>,
+}
+impl<'a, T> Debug for ReceiveStream<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReceiveStream {{ .. }}")
+    }
+}
+impl<'a, T> Stream for ReceiveStream<'a, T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.terminated {
+            return Poll::Ready(None);
+        }
+        match Pin::new(&mut self.future).poll(cx) {
+            Poll::Ready(res) => match res {
+                Ok(d) => {
+                    self.future.reset();
+                    Poll::Ready(Some(d))
+                }
+                Err(_) => {
+                    self.terminated = true;
+                    Poll::Ready(None)
+                }
+            },
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<'a, T> FusedStream for ReceiveStream<'a, T> {
+    fn is_terminated(&self) -> bool {
+        self.receiver.is_terminated()
+    }
+}
+
+impl<'a, T> ReceiveStream<'a, T> {
+    pub(crate) fn new_borrowed(receiver: &'a AsyncReceiver<T>) -> Self {
+        ReceiveStream {
+            future: receiver.recv(),
+            terminated: false,
+            receiver,
         }
     }
 }

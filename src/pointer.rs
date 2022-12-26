@@ -34,7 +34,7 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) fn new_owned(d: T) -> Self {
         if size_of::<T>() > size_of::<*mut T>() {
-            panic!("bug: data can't be stored when size of T is bigger than pointer size");
+            unreachable!("bug: data can't be stored when size of T is bigger than pointer size");
         } else {
             // Safety: d is valid memory object
             let ret = Self(unsafe { store_as_kanal_ptr(&d).into() });
