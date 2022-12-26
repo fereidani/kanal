@@ -84,7 +84,7 @@ impl<'a, T> SendFuture<'a, T> {
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
         if size_of::<T>() > size_of::<*mut T>() {
-            unsafe { self.data.assume_init_drop() };
+            self.data.assume_init_drop();
         } else {
             self.sig.read_and_drop_ptr();
         }
