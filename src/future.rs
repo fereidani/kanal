@@ -1,7 +1,7 @@
 use futures_core::{FusedStream, Future, Stream};
 use std::{
     fmt::Debug,
-    mem::{needs_drop, MaybeUninit, size_of},
+    mem::{needs_drop, size_of, MaybeUninit},
     pin::Pin,
     task::Poll,
 };
