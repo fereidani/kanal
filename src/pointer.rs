@@ -1,5 +1,5 @@
 use std::mem::{forget, size_of, zeroed};
-use std::ptr::{copy_nonoverlapping, read, write};
+use std::ptr;
 use std::{cell::UnsafeCell, mem::MaybeUninit};
 
 /// Kanal Pointer is a structure to move data efficiently between sync and async context.
@@ -66,7 +66,7 @@ impl<T> KanalPtr<T> {
         }
         if size_of::<T>() > size_of::<*mut T>() {
             // Data is in actual pointer location
-            read((*self.0.get()).assume_init())
+            ptr::read((*self.0.get()).assume_init())
         } else {
             // Data is serialized as pointer location, load it from pointer value instead
             restore_from_kanal_ptr(*self.0.get())
@@ -75,15 +75,14 @@ impl<T> KanalPtr<T> {
     /// Writes data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
     pub(crate) unsafe fn write(&self, d: T) {
-        if size_of::<T>() == 0 {
-            return;
-        }
         if size_of::<T>() > size_of::<*mut T>() {
             // Data cant be stored as pointer value, move it to pointer location
-            write((*self.0.get()).assume_init(), d);
+            ptr::write((*self.0.get()).assume_init(), d);
         } else {
-            // Data size is less or equal to pointer size, serialize data as pointer address
-            *self.0.get() = store_as_kanal_ptr(&d);
+            if size_of::<T>() > 0 {
+                // Data size is less or equal to pointer size, serialize data as pointer address
+                *self.0.get() = store_as_kanal_ptr(&d);
+            }
             forget(d);
         }
     }
@@ -96,7 +95,7 @@ unsafe fn store_as_kanal_ptr<T>(ptr: *const T) -> MaybeUninit<*mut T> {
     if size_of::<T>() == 0 {
         return ret;
     }
-    copy_nonoverlapping(ptr, ret.as_mut_ptr() as *mut T, 1);
+    ptr::copy_nonoverlapping(ptr, ret.as_mut_ptr() as *mut T, 1);
     ret
 }
 
@@ -106,5 +105,5 @@ unsafe fn restore_from_kanal_ptr<T>(ptr: MaybeUninit<*mut T>) -> T {
     if size_of::<T>() == 0 {
         return zeroed();
     }
-    read(ptr.as_ptr() as *const T)
+    ptr::read(ptr.as_ptr() as *const T)
 }
