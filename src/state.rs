@@ -113,15 +113,6 @@ impl State {
         self.v.store(TERMINATED, Ordering::Release)
     }
 
-    /// Acquire lock for the current thread from the state, should not be used on any part of async because the thread that acquires
-    ///  a lock should not go to sleep and we can't guarantee that in async
-    #[inline(always)]
-    pub fn lock(&self) -> bool {
-        self.v
-            .compare_exchange(UNLOCKED, LOCKED, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-    }
-
     /// Tries to upgrade the lock to starvation mode
     #[inline(always)]
     pub fn upgrade_lock(&self) -> bool {
