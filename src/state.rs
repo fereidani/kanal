@@ -1,7 +1,7 @@
 #[cfg(feature = "async")]
 use std::time::Duration;
 use std::{
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{fence, AtomicU8, Ordering},
     time::Instant,
 };
 
@@ -10,12 +10,6 @@ use crate::backoff;
 /// The state keeps the state of signals in both sync and async to make eventing for senders and receivers possible
 pub struct State {
     v: AtomicU8,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self { v: 0.into() }
-    }
 }
 
 pub const UNLOCKED: u8 = 0;
@@ -31,10 +25,10 @@ impl State {
         }
     }
 
-    /// Returns the current value of State with recommended Ordering
+    /// Returns the current value of State with the relaxed ordering
     #[inline(always)]
-    pub fn value(&self, ordering: Ordering) -> u8 {
-        self.v.load(ordering)
+    pub fn load_relaxed(&self) -> u8 {
+        self.v.load(Ordering::Relaxed)
     }
 
     /// Waits synchronously without putting the thread to sleep until the instant time is reached
@@ -43,18 +37,20 @@ impl State {
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
         for _ in 0..(1 << 8) {
-            let v = self.v.load(Ordering::Acquire);
+            let v = self.v.load(Ordering::Relaxed);
             if v < LOCKED {
+                fence(Ordering::Acquire);
                 return v;
             }
             backoff::spin_hint();
         }
         while Instant::now() < until {
-            let v = self.v.load(Ordering::Acquire);
+            let v = self.v.load(Ordering::Relaxed);
             if v < LOCKED {
+                fence(Ordering::Acquire);
                 return v;
             }
-            backoff::yield_now();
+            backoff::yield_now_std();
         }
         self.v.load(Ordering::Acquire)
     }
@@ -64,8 +60,9 @@ impl State {
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_indefinitely(&self) -> u8 {
         for _ in 0..(1 << 8) {
-            let v = self.v.load(Ordering::Acquire);
+            let v = self.load_relaxed();
             if v < LOCKED {
+                fence(Ordering::Acquire);
                 return v;
             }
             backoff::spin_hint();
@@ -73,8 +70,9 @@ impl State {
         let mut sleep_time: u64 = 1 << 10;
         loop {
             backoff::sleep(Duration::from_nanos(sleep_time));
-            let v = self.v.load(Ordering::Acquire);
+            let v = self.load_relaxed();
             if v < LOCKED {
+                fence(Ordering::Acquire);
                 return v;
             }
             // increase sleep_time gradually to 262 microseconds
@@ -87,9 +85,8 @@ impl State {
     /// Unlocks the state and changes it to a successful state
     #[inline(always)]
     pub unsafe fn unlock(&self) -> bool {
-        // TODO: investigate whether we can weaken the internal orderings even more.
         self.v
-            .compare_exchange(LOCKED, UNLOCKED, Ordering::AcqRel, Ordering::Relaxed)
+            .compare_exchange(LOCKED, UNLOCKED, Ordering::Release, Ordering::Relaxed)
             .is_ok()
     }
 
@@ -103,7 +100,7 @@ impl State {
     #[inline(always)]
     pub unsafe fn terminate(&self) -> bool {
         self.v
-            .compare_exchange(LOCKED, TERMINATED, Ordering::AcqRel, Ordering::Relaxed)
+            .compare_exchange(LOCKED, TERMINATED, Ordering::Release, Ordering::Relaxed)
             .is_ok()
     }
 
@@ -120,21 +117,9 @@ impl State {
             .compare_exchange(
                 LOCKED,
                 LOCKED_STARVATION,
-                Ordering::AcqRel,
+                Ordering::Release,
                 Ordering::Relaxed,
             )
             .is_ok()
-    }
-
-    /// Returns whether the state is still in locked modes
-    #[inline]
-    pub fn is_locked(&self) -> bool {
-        self.v.load(Ordering::Acquire) >= LOCKED
-    }
-
-    /// Returns whether the state is terminated by the a successful call to the`terminate` or any call to the `force_terminate` function or not
-    #[inline]
-    pub fn is_terminated(&self) -> bool {
-        self.v.load(Ordering::Acquire) == TERMINATED
     }
 }

@@ -1,7 +1,6 @@
 use crate::pointer::KanalPtr;
-use crate::state::{State, LOCKED, LOCKED_STARVATION, UNLOCKED};
-use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
+use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
+use std::sync::atomic::{fence, Ordering};
 use std::task::{Poll, Waker};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
@@ -11,7 +10,6 @@ pub struct AsyncSignal<T> {
     state: State,
     ptr: KanalPtr<T>,
     waker: Option<Waker>,
-    phantom: PhantomData<Box<T>>,
 }
 
 #[cfg(feature = "async")]
@@ -25,11 +23,12 @@ impl<T> std::future::Future for AsyncSignal<T> {
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<Self::Output> {
-        let val = self.state.value(Ordering::Acquire);
-        if val >= LOCKED {
+        let v = self.state.load_relaxed();
+        if v >= LOCKED {
             Poll::Pending
         } else {
-            Poll::Ready(val)
+            fence(Ordering::Acquire);
+            Poll::Ready(v)
         }
     }
 }
@@ -43,7 +42,6 @@ impl<T> AsyncSignal<T> {
             state: State::locked(),
             ptr: Default::default(),
             waker: Default::default(),
-            phantom: PhantomData,
         }
     }
     /// Signal to send data to a writer for specific kanal pointer
@@ -53,7 +51,6 @@ impl<T> AsyncSignal<T> {
             state: State::locked(),
             ptr,
             waker: Default::default(),
-            phantom: PhantomData,
         }
     }
     /// Set pointer to data for receiving or sending
@@ -150,7 +147,6 @@ pub struct SyncSignal<T> {
     state: State,
     ptr: KanalPtr<T>,
     thread: Thread,
-    phantom: PhantomData<Box<T>>,
 }
 
 unsafe impl<T> Send for SyncSignal<T> {}
@@ -161,11 +157,10 @@ impl<T> SyncSignal<T> {
     /// Returns new sync signal for the provided thread
     #[inline(always)]
     pub(crate) fn new(ptr: KanalPtr<T>, thread: Thread) -> Self {
-        SyncSignal {
+        Self {
             state: State::locked(),
             ptr,
             thread,
-            phantom: PhantomData,
         }
     }
 
@@ -246,10 +241,11 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub fn wait(&self) -> bool {
         // WAIT FOR UNLOCK
-        let until = Instant::now() + Duration::from_nanos(1 << 18); // about 0.26ms
+        let until = Instant::now() + Duration::from_nanos(1 << 18); //about 0.26ms
         let mut v = self.state.wait_unlock_until(until);
 
         if v < LOCKED {
+            fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
         // enter starvation mod
@@ -257,11 +253,12 @@ impl<T> SyncSignal<T> {
             v = LOCKED_STARVATION;
             while v == LOCKED_STARVATION {
                 std::thread::park();
-                v = self.state.value(Ordering::Acquire);
+                v = self.state.load_relaxed();
             }
         } else {
-            v = self.state.value(Ordering::Acquire);
+            v = self.state.load_relaxed();
         }
+        fence(Ordering::Acquire);
         v == UNLOCKED
     }
 
@@ -269,19 +266,14 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub fn wait_timeout(&self, until: Instant) -> bool {
         let v = self.state.wait_unlock_until(until);
+        fence(Ordering::Acquire);
         v == UNLOCKED
-    }
-
-    /// Returns whether the state of the signal is still in locked modes
-    #[inline]
-    pub fn is_locked(&self) -> bool {
-        self.state.is_locked()
     }
 
     /// Returns whether the signal is terminated by the `terminate` function or not
     #[inline(always)]
     pub fn is_terminated(&self) -> bool {
-        self.state.is_terminated()
+        self.state.load_relaxed() == TERMINATED
     }
 }
 
