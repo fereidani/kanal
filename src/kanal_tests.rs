@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 #[cfg(not(miri))]
-const MESSAGES: usize = 1000000;
+const MESSAGES: usize = 100000;
 #[cfg(miri)]
 const MESSAGES: usize = 1024;
-const THREADS: usize = 64;
+const THREADS: usize = 8;
 
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -211,6 +211,11 @@ mod tests {
     #[test]
     fn integrity_big() {
         integrity_test!((0u64, 0u64, 0u64, 0u64), (!0u64, !0u64, !0u64, !0u64));
+    }
+
+    #[test]
+    fn integrity_string() {
+        integrity_test!("", "not empty");
     }
 
     #[test]
@@ -596,6 +601,11 @@ mod async_tests {
     #[tokio::test]
     async fn integrity_big() {
         integrity_test!((0u64, 0u64, 0u64, 0u64), (!0u64, !0u64, !0u64, !0u64));
+    }
+
+    #[tokio::test]
+    async fn integrity_string() {
+        integrity_test!("", "not empty");
     }
 
     #[tokio::test]
