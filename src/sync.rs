@@ -24,7 +24,7 @@ mod imp {
     #[inline(always)]
     fn futex_wait(futex: &AtomicU32, expected: i32) -> bool {
         unsafe {
-            // Safety: futex pointer address is valid, so calling this syscall is safe
+            // Safety: futex pointer address is always valid.
             libc::syscall(
                 libc::SYS_futex,
                 futex as *const AtomicU32 as *mut u32,
@@ -37,7 +37,7 @@ mod imp {
     // returns false if action fails
     #[inline(always)]
     fn futex_wake(futex: &AtomicU32) -> bool {
-        // Safety: futex pointer address is valid, so calling this syscall is safe
+        // Safety: futex pointer address is always valid.
         unsafe {
             libc::syscall(
                 libc::SYS_futex,
@@ -75,6 +75,7 @@ mod imp {
     #[inline(always)]
     fn futex_wait(futex: &AtomicU32, expected: i32) {
         unsafe {
+            // Safety: futex pointer address is always valid.
             libc::futex(
                 futex as *const AtomicU32 as *mut _,
                 libc::FUTEX_WAIT,
@@ -88,6 +89,7 @@ mod imp {
     #[inline(always)]
     fn futex_wake(futex: &AtomicU32) -> bool {
         unsafe {
+            // Safety: futex pointer address is always valid.
             libc::futex(
                 futex as *const AtomicU32 as *mut _,
                 libc::FUTEX_WAKE,
@@ -136,6 +138,7 @@ mod imp {
 
     #[inline(always)]
     fn futex_wait(futex: &AtomicU32, expected: libc::c_uint) {
+        // Safety: futex pointer address is always valid.
         unsafe {
             emscripten_futex_wait(futex as *const AtomicU32, expected, f64::INFINITY);
         }
@@ -143,6 +146,7 @@ mod imp {
     // returns false if action fails
     #[inline(always)]
     fn futex_wake(futex: &AtomicU32) -> bool {
+        // Safety: futex pointer address is always valid.
         unsafe { emscripten_futex_wake(futex as *const AtomicU32, 1) > 0 }
     }
 
@@ -174,8 +178,9 @@ mod imp {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     pub fn futex_wake(futex: &AtomicU32) {
+        futex.store(!0, Ordering::Relaxed);
+        // Safety: futex pointer address is always valid.
         unsafe {
-            futex.store(!0, Ordering::Relaxed);
             libc::_umtx_op(
                 futex as *const AtomicU32 as *mut _,
                 libc::UMTX_OP_WAKE_PRIVATE,
@@ -187,6 +192,7 @@ mod imp {
     }
     pub fn futex_wait(futex: &AtomicU32, expected: libc::c_ulong) {
         while {
+            // Safety: futex pointer address is always valid.
             unsafe {
                 libc::_umtx_op(
                     futex as *const AtomicU32 as *mut _,
@@ -230,6 +236,7 @@ mod imp {
     pub fn futex_wake(futex: &AtomicU32) {
         unsafe {
             futex.store(!0, Ordering::Relaxed);
+            // Safety: futex pointer address is always valid..
             unsafe {
                 libc::umtx_wakeup(futex as *const AtomicU32 as *const _, 1);
             };
@@ -237,6 +244,7 @@ mod imp {
     }
     pub fn futex_wait(futex: &AtomicU32, expected: libc::c_int) {
         while {
+            // Safety: futex pointer address is always valid.
             unsafe {
                 libc::umtx_sleep(futex as *const AtomicU32 as *const _, expected, 0);
             }
@@ -271,7 +279,7 @@ mod imp {
     target_os = "android",
     target_os = "openbsd",
     target_os = "freebsd",
-    target_os = "dragonbsd",
+    target_os = "dragonfly",
     target_os = "emscripten",
 )))]
 mod imp {
