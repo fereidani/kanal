@@ -42,21 +42,21 @@ pub fn spin_wait(count: usize) {
 pub fn yield_now() {
     // This number will be added to the calculate pseudo random to avoid short spins
     const OFFSET: usize = 1 << 6;
-    spin_wait((random_u8() as usize).wrapping_add(OFFSET));
+    spin_wait((random_u7() as usize).wrapping_add(OFFSET));
 }
 
-/// Generates a pseudo u8 random number using atomics with LCG like algorithm
-/// This genearator is only suited for special use-case of yield_now, and not recommended for use anywhere else.
+/// Generates a 7-bits pseudo random number using atomics with LCG like algorithm
+/// This generator is only suited for special use-case of yield_now, and not recommended for use anywhere else.
 #[allow(dead_code)]
 #[inline(always)]
-fn random_u8() -> u8 {
+fn random_u7() -> u8 {
     // SEED number is inited with Mathematiclly proven super unlucky number. (I'm kidding, don't file a bug report please)
     static SEED: AtomicU8 = AtomicU8::new(13);
-    const MULTIPLIER: u8 = 223;
+    const MULTIPLIER: u8 = 113;
     // Increment the seed atomically
     let seed = SEED.fetch_add(1, Ordering::SeqCst);
     // Use a LCG like algorithm to generate a random number from the seed
-    seed.wrapping_mul(MULTIPLIER)
+    seed.wrapping_mul(MULTIPLIER) & 0x7F
 }
 
 /// Generates a pseudo u32 random number using atomics with LCG like algorithm same as random_u8
@@ -73,5 +73,5 @@ fn random_u32() -> u32 {
 #[allow(dead_code)]
 #[inline(always)]
 pub fn randomize(d: usize) -> usize {
-    d + random_u32() as usize % (d >> 2)
+    d - (d >> 3) + random_u32() as usize % (d >> 2)
 }
