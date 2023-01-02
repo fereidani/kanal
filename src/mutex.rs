@@ -6,8 +6,8 @@ use std::{
 
 use crate::backoff;
 
-const INTIIAL_SPIN_CYCLES: usize = 1 << 3;
-const STRATEGY_SWITCH_THRESHOLD: usize = 4;
+const INTIIAL_SPIN_CYCLES: usize = 1 << 2;
+const STRATEGY_SWITCH_THRESHOLD: usize = 5;
 
 pub struct RawMutexLock {
     locked: AtomicBool,
@@ -34,12 +34,16 @@ unsafe impl RawMutex for RawMutexLock {
             // randomize next entry with yield_now
             backoff::yield_now();
         }
-        let mut cycles = INTIIAL_SPIN_CYCLES << 1;
+        let mut cycles = INTIIAL_SPIN_CYCLES << 2;
         loop {
-            // Backoff about 0.5ms and try harder next time
-            backoff::sleep(Duration::from_nanos(backoff::randomize(1 << 19) as u64));
+            // Backoff about 1ms and try harder next time
+            backoff::sleep(Duration::from_nanos(backoff::randomize(1 << 20) as u64));
             for _ in 0..cycles {
-                if self.try_lock() {
+                if self
+                    .locked
+                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
                     return;
                 }
                 backoff::spin_hint();
