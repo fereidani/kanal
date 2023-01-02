@@ -10,6 +10,7 @@
 pub(crate) mod backoff;
 #[cfg(feature = "async")]
 mod future;
+pub(crate) mod sync;
 #[cfg(feature = "async")]
 pub use future::*;
 
@@ -27,7 +28,7 @@ pub(crate) mod state;
 use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
 use pointer::KanalPtr;
 
-use std::mem::MaybeUninit;
+use std::mem::{forget, needs_drop, size_of, MaybeUninit};
 use std::time::{Duration, Instant};
 
 use std::fmt;
@@ -617,7 +618,7 @@ impl<T> Sender<T> {
         } else {
             // send directly to the waitlist
             let _data_address_holder = &data; // pin to address
-            let sig = SyncSignal::new(KanalPtr::new_from(&mut data), std::thread::current());
+            let sig = SyncSignal::new(KanalPtr::new_from(&mut data));
             let _sig_address_holder = &sig;
             internal.push_send(sig.as_signal());
             drop(internal);
@@ -625,8 +626,8 @@ impl<T> Sender<T> {
                 return Err(SendError::Closed);
             }
             // data semantically is moved so forget about dropping it if it requires dropping
-            if std::mem::needs_drop::<T>() {
-                std::mem::forget(data);
+            if needs_drop::<T>() {
+                forget(data);
             }
             Ok(())
         }
@@ -672,7 +673,7 @@ impl<T> Sender<T> {
         } else {
             // send directly to the waitlist
             let _data_address_holder = &data; // pin to address
-            let sig = SyncSignal::new(KanalPtr::new_from(&mut data), std::thread::current());
+            let sig = SyncSignal::new(KanalPtr::new_from(&mut data));
             let _sig_address_holder = &sig;
             internal.push_send(sig.as_signal());
             drop(internal);
@@ -745,7 +746,7 @@ impl<T> Sender<T> {
             // send directly to the waitlist
             let mut d = data.take().unwrap();
             let _data_address_holder = &d; // pin to address
-            let sig = SyncSignal::new(KanalPtr::new_from(&mut d), std::thread::current());
+            let sig = SyncSignal::new(KanalPtr::new_from(&mut d));
             let _sig_address_holder = &sig;
             internal.push_send(sig.as_signal());
             drop(internal);
@@ -801,7 +802,7 @@ impl<T> AsyncSender<T> {
     /// ```
     #[inline(always)]
     pub fn send(&'_ self, data: T) -> SendFuture<'_, T> {
-        if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+        if size_of::<T>() > size_of::<*mut T>() {
             SendFuture {
                 state: FutureState::Zero,
                 internal: &self.internal,
@@ -906,10 +907,7 @@ impl<T> Receiver<T> {
             let mut ret = MaybeUninit::<T>::uninit();
             let _ret_address_holder = &ret;
 
-            let sig = SyncSignal::new(
-                KanalPtr::new_write_address_ptr(ret.as_mut_ptr()),
-                std::thread::current(),
-            );
+            let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
             let _sig_address_holder = &sig;
             internal.push_recv(sig.as_signal());
             drop(internal);
@@ -919,7 +917,7 @@ impl<T> Receiver<T> {
             }
 
             // Safety: it's safe to assume init as data is forgotten on another side
-            if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            if size_of::<T>() > size_of::<*mut T>() {
                 Ok(unsafe { ret.assume_init() })
             } else {
                 Ok(unsafe { sig.assume_init() })
@@ -957,10 +955,7 @@ impl<T> Receiver<T> {
             let mut ret = MaybeUninit::<T>::uninit();
             let _ret_address_holder = &ret;
 
-            let sig = SyncSignal::new(
-                KanalPtr::new_write_address_ptr(ret.as_mut_ptr()),
-                std::thread::current(),
-            );
+            let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
             let _sig_address_holder = &sig;
             internal.push_recv(sig.as_signal());
             drop(internal);
@@ -980,7 +975,7 @@ impl<T> Receiver<T> {
                 }
             }
             // Safety: it's safe to assume init as data is forgotten on another side
-            if std::mem::size_of::<T>() > std::mem::size_of::<*mut T>() {
+            if size_of::<T>() > size_of::<*mut T>() {
                 Ok(unsafe { ret.assume_init() })
             } else {
                 Ok(unsafe { sig.assume_init() })

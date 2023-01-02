@@ -1,9 +1,10 @@
+use crate::backoff;
 use crate::pointer::KanalPtr;
-use crate::state::{State, LOCKED, LOCKED_STARVATION, TERMINATED, UNLOCKED};
+use crate::state::{State, LOCKED, TERMINATED, UNLOCKED};
+use crate::sync::{SysWait, WaitAPI};
 use std::sync::atomic::{fence, Ordering};
 use std::task::{Poll, Waker};
-use std::thread::Thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
@@ -23,7 +24,7 @@ impl<T> std::future::Future for AsyncSignal<T> {
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<Self::Output> {
-        let v = self.state.load_relaxed();
+        let v = self.state.relaxed();
         if v >= LOCKED {
             Poll::Pending
         } else {
@@ -146,7 +147,7 @@ impl<T> AsyncSignal<T> {
 pub struct SyncSignal<T> {
     state: State,
     ptr: KanalPtr<T>,
-    thread: Thread,
+    os_signal: SysWait,
 }
 
 unsafe impl<T> Send for SyncSignal<T> {}
@@ -156,11 +157,11 @@ unsafe impl<T> Sync for SyncSignal<T> {}
 impl<T> SyncSignal<T> {
     /// Returns new sync signal for the provided thread
     #[inline(always)]
-    pub(crate) fn new(ptr: KanalPtr<T>, thread: Thread) -> Self {
+    pub(crate) fn new(ptr: KanalPtr<T>) -> Self {
         Self {
             state: State::locked(),
             ptr,
-            thread,
+            os_signal: SysWait::new(),
         }
     }
 
@@ -184,11 +185,8 @@ impl<T> SyncSignal<T> {
     pub unsafe fn send(this: *const Self, d: T) {
         (*this).ptr.write(d);
         if !(*this).state.unlock() {
-            // Clone the thread because this.thread might get destroyed after force_unlock
-            // it's possible during unpark the other thread wakes up faster and drops the thread object
-            let thread = (*this).thread.clone();
             (*this).state.force_unlock();
-            thread.unpark();
+            (*this).os_signal.wake();
         }
     }
 
@@ -200,11 +198,8 @@ impl<T> SyncSignal<T> {
     pub unsafe fn recv(this: *const Self) -> T {
         let d = (*this).ptr.read();
         if !(*this).state.unlock() {
-            // Clone the thread because this.thread might get destroyed after force_unlock
-            // it's possible during unpark the other thread wakes up faster and drops the thread object
-            let thread = (*this).thread.clone();
             (*this).state.force_unlock();
-            thread.unpark();
+            (*this).os_signal.wake();
         }
         d
     }
@@ -229,37 +224,34 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub unsafe fn terminate(this: *const Self) {
         if !(*this).state.terminate() {
-            // Clone the thread because this.thread might get destroyed after force_terminate
-            // it's possible during unpark the other thread wakes up faster and drops the thread object
-            let thread = (*this).thread.clone();
             (*this).state.force_terminate();
-            thread.unpark();
+            (*this).os_signal.wake();
         }
     }
 
     /// Waits for signal and returns true if send/recv operation was successful
     #[inline(always)]
     pub fn wait(&self) -> bool {
-        // WAIT FOR UNLOCK
-        let until = Instant::now() + Duration::from_nanos(1 << 18); //about 0.26ms
-        let mut v = self.state.wait_unlock_until(until);
-
+        let v = self.state.relaxed();
         if v < LOCKED {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
-        // enter starvation mod
-        if self.state.upgrade_lock() {
-            v = LOCKED_STARVATION;
-            while v == LOCKED_STARVATION {
-                std::thread::park();
-                v = self.state.load_relaxed();
+
+        for _ in 0..256 {
+            //backoff::spin_wait(96);
+            backoff::yield_now_std();
+            let v = self.state.relaxed();
+            if v < LOCKED {
+                fence(Ordering::Acquire);
+                return v == UNLOCKED;
             }
-        } else {
-            v = self.state.load_relaxed();
         }
-        fence(Ordering::Acquire);
-        v == UNLOCKED
+
+        if self.state.upgrade_lock() {
+            self.os_signal.wait();
+        }
+        self.state.acquire() == UNLOCKED
     }
 
     /// Waits for signal and returns true if send/recv operation was successful
@@ -273,7 +265,7 @@ impl<T> SyncSignal<T> {
     /// Returns whether the signal is terminated by the `terminate` function or not
     #[inline(always)]
     pub fn is_terminated(&self) -> bool {
-        self.state.load_relaxed() == TERMINATED
+        self.state.relaxed() == TERMINATED
     }
 }
 

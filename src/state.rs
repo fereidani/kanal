@@ -27,8 +27,14 @@ impl State {
 
     /// Returns the current value of State with the relaxed ordering
     #[inline(always)]
-    pub fn load_relaxed(&self) -> u8 {
+    pub fn relaxed(&self) -> u8 {
         self.v.load(Ordering::Relaxed)
+    }
+
+    /// Returns the current value of State with the acquire ordering
+    #[inline(always)]
+    pub fn acquire(&self) -> u8 {
+        self.v.load(Ordering::Acquire)
     }
 
     /// Waits synchronously without putting the thread to sleep until the instant time is reached
@@ -36,14 +42,16 @@ impl State {
     #[inline(always)]
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_unlock_until(&self, until: Instant) -> u8 {
-        for _ in 0..(1 << 8) {
+        for _ in 0..32 {
             let v = self.v.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v;
             }
-            backoff::spin_hint();
+            // randomize next entry with yield_now
+            backoff::yield_now();
         }
+        //return self.v.load(Ordering::Acquire);
         while Instant::now() < until {
             let v = self.v.load(Ordering::Relaxed);
             if v < LOCKED {
@@ -59,18 +67,26 @@ impl State {
     #[cfg(feature = "async")]
     #[must_use = "ignoring wait functions return value will lead to UB"]
     pub fn wait_indefinitely(&self) -> u8 {
-        for _ in 0..(1 << 8) {
-            let v = self.load_relaxed();
+        let v = self.relaxed();
+        if v < LOCKED {
+            fence(Ordering::Acquire);
+            return v;
+        }
+
+        for _ in 0..32 {
+            //backoff::spin_wait(96);
+            backoff::yield_now_std();
+            let v = self.relaxed();
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v;
             }
-            backoff::spin_hint();
         }
+
         let mut sleep_time: u64 = 1 << 10;
         loop {
             backoff::sleep(Duration::from_nanos(sleep_time));
-            let v = self.load_relaxed();
+            let v = self.relaxed();
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v;
