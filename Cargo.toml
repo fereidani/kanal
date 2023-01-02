@@ -16,6 +16,9 @@ futures-core = "0.3"
 lock_api = "0.4"
 pin-project-lite = "0.2"
 
+[target.'cfg(any(target_os = "linux",target_os = "android",target_os = "openbsd",target_os = "freebsd",target_os = "dragonbsd"))'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 anyhow = "1.0"
 crossbeam = "0.8"
