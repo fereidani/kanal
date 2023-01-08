@@ -20,7 +20,6 @@ mod error;
 pub use error::*;
 
 pub(crate) mod internal;
-mod kanal_tests;
 pub(crate) mod mutex;
 mod signal;
 pub(crate) mod state;

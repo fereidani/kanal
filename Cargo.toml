@@ -7,7 +7,7 @@ description = "The fast sync and async channel that Rust deserves"
 repository = "https://github.com/fereidani/kanal"
 documentation = "https://docs.rs/kanal"
 keywords = ["channel", "mpsc", "mpmc", "async", "golang"]
-categories = ["concurrency", "data-structures","asynchronous"]
+categories = ["concurrency", "data-structures", "asynchronous"]
 license = "MIT"
 readme = "README.md"
 
@@ -22,10 +22,15 @@ libc = "0.2"
 [dev-dependencies]
 anyhow = "1.0"
 crossbeam = "0.8"
-tokio = { version = "1", features =["rt-multi-thread", "test-util", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "test-util", "macros"] }
 futures = "0.3"
 
 [features]
-async=[]
-std-mutex=[]
+async = []
+std-mutex = []
 default = ["async"]
+
+[[test]]
+name = "async_tests"
+path = "tests/async.rs"
+required-features = ["async"]

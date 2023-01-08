@@ -3,6 +3,7 @@ use crate::pointer::KanalPtr;
 use crate::state::{State, LOCKED, TERMINATED, UNLOCKED};
 use crate::sync::{SysWait, WaitAPI};
 use std::sync::atomic::{fence, Ordering};
+#[cfg(feature = "async")]
 use std::task::{Poll, Waker};
 use std::time::Instant;
 
