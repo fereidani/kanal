@@ -1,6 +1,6 @@
 use crate::backoff;
 use crate::pointer::KanalPtr;
-use crate::state::{State, LOCKED, TERMINATED, UNLOCKED};
+use crate::state::*;
 use crate::sync::{SysWait, WaitAPI};
 use std::sync::atomic::{fence, Ordering};
 #[cfg(feature = "async")]
@@ -72,6 +72,7 @@ impl<T> Signal<T> {
 
     /// Waits for finishing async signal for a short time
     #[inline(always)]
+    #[cfg(feature = "async")]
     pub(crate) fn async_blocking_wait(&self) -> bool {
         let v = self.state.relaxed();
         if v < LOCKED {
@@ -128,6 +129,7 @@ impl<T> Signal<T> {
                 }
                 self.state.acquire() == UNLOCKED
             }
+            #[cfg(feature = "async")]
             KanalWaker::None | KanalWaker::Async(_) => unreachable!(),
         }
     }
@@ -157,6 +159,7 @@ impl<T> Signal<T> {
 
     /// Set pointer to data for receiving or sending
     #[inline(always)]
+    #[cfg(feature = "async")]
     pub(crate) fn set_ptr(&mut self, ptr: KanalPtr<T>) {
         self.ptr = ptr;
     }
@@ -231,6 +234,7 @@ impl<T> Signal<T> {
 
     /// Loads pointer data and drops it in place
     /// Safety: it should only be used once, and only when data in ptr is valid and not moved.
+    #[cfg(feature = "async")]
     pub(crate) unsafe fn load_and_drop(&self) {
         _ = self.ptr.read();
     }
