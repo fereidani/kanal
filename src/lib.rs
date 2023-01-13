@@ -325,6 +325,9 @@ macro_rules! shared_send_impl {
         /// ```
         #[inline(always)]
         pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, SendError> {
+            if data.is_none() {
+                panic!("send data option is None");
+            }
             let mut internal = acquire_internal(&self.internal);
             if internal.recv_count == 0 {
                 let send_count = internal.send_count;
@@ -414,6 +417,9 @@ macro_rules! shared_send_impl {
         /// ```
         #[inline(always)]
         pub fn try_send_option_realtime(&self, data: &mut Option<T>) -> Result<bool, SendError> {
+            if data.is_none() {
+                panic!("send data option is None");
+            }
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
                 if internal.recv_count == 0 {
                     let send_count = internal.send_count;
@@ -733,6 +739,9 @@ impl<T> Sender<T> {
         data: &mut Option<T>,
         duration: Duration,
     ) -> Result<(), SendErrorTimeout> {
+        if data.is_none() {
+            panic!("send data option is None");
+        }
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
