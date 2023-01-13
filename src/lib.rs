@@ -8,33 +8,31 @@
 #![warn(missing_docs, missing_debug_implementations)]
 
 pub(crate) mod backoff;
-#[cfg(feature = "async")]
-mod future;
-pub(crate) mod sync;
-#[cfg(feature = "async")]
-pub use future::*;
-
+pub(crate) mod internal;
+pub(crate) mod mutex;
 pub(crate) mod pointer;
+pub(crate) mod state;
+pub(crate) mod sync;
 
 mod error;
-pub use error::*;
-
-pub(crate) mod internal;
-mod kanal_tests;
-pub(crate) mod mutex;
+#[cfg(feature = "async")]
+mod future;
+mod oneshot;
 mod signal;
-pub(crate) mod state;
 
+pub use error::*;
+#[cfg(feature = "async")]
+pub use future::*;
 use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
+pub use oneshot::*;
 use pointer::KanalPtr;
-
-use std::mem::{forget, needs_drop, size_of, MaybeUninit};
-use std::time::{Duration, Instant};
-
+use signal::*;
 use std::fmt;
 use std::fmt::Debug;
-
-use signal::*;
+#[cfg(feature = "async")]
+use std::mem::transmute;
+use std::mem::{forget, needs_drop, size_of, MaybeUninit};
+use std::time::{Duration, Instant};
 
 /// Sending side of the channel in sync mode.
 /// Senders can be cloned and produce senders to operate in both sync and async modes.
@@ -67,7 +65,7 @@ impl<T> Drop for Sender<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count > 0 {
             internal.send_count -= 1;
-            if internal.send_count == 0 {
+            if internal.send_count == 0 && internal.recv_count != 0 {
                 internal.terminate_signals();
             }
         }
@@ -80,7 +78,7 @@ impl<T> Drop for AsyncSender<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.send_count > 0 {
             internal.send_count -= 1;
-            if internal.send_count == 0 {
+            if internal.send_count == 0 && internal.recv_count != 0 {
                 internal.terminate_signals();
             }
         }
@@ -617,10 +615,8 @@ impl<T> Sender<T> {
             Ok(())
         } else {
             // send directly to the waitlist
-            let _data_address_holder = &data; // pin to address
-            let sig = SyncSignal::new(KanalPtr::new_from(&mut data));
-            let _sig_address_holder = &sig;
-            internal.push_send(sig.as_signal());
+            let sig = Signal::new_sync(KanalPtr::new_from(&mut data));
+            internal.push_send(sig.get_terminator());
             drop(internal);
             if !sig.wait() {
                 return Err(SendError::Closed);
@@ -672,10 +668,8 @@ impl<T> Sender<T> {
             Ok(())
         } else {
             // send directly to the waitlist
-            let _data_address_holder = &data; // pin to address
-            let sig = SyncSignal::new(KanalPtr::new_from(&mut data));
-            let _sig_address_holder = &sig;
-            internal.push_send(sig.as_signal());
+            let sig = Signal::new_sync(KanalPtr::new_from(&mut data));
+            internal.push_send(sig.get_terminator());
             drop(internal);
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
@@ -683,7 +677,7 @@ impl<T> Sender<T> {
                 }
                 {
                     let mut internal = acquire_internal(&self.internal);
-                    if internal.cancel_send_signal(sig.as_signal()) {
+                    if internal.cancel_send_signal(&sig) {
                         return Err(SendErrorTimeout::Timeout);
                     }
                 }
@@ -745,10 +739,8 @@ impl<T> Sender<T> {
         } else {
             // send directly to the waitlist
             let mut d = data.take().unwrap();
-            let _data_address_holder = &d; // pin to address
-            let sig = SyncSignal::new(KanalPtr::new_from(&mut d));
-            let _sig_address_holder = &sig;
-            internal.push_send(sig.as_signal());
+            let sig = Signal::new_sync(KanalPtr::new_from(&mut d));
+            internal.push_send(sig.get_terminator());
             drop(internal);
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
@@ -757,7 +749,7 @@ impl<T> Sender<T> {
                 }
                 {
                     let mut internal = acquire_internal(&self.internal);
-                    if internal.cancel_send_signal(sig.as_signal()) {
+                    if internal.cancel_send_signal(&sig) {
                         *data = Some(d);
                         return Err(SendErrorTimeout::Timeout);
                     }
@@ -784,6 +776,51 @@ impl<T> Sender<T> {
             internal: self.internal.clone(),
         }
     }
+
+    /// Converts Sender to AsyncSender and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use tokio::{spawn as co};
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded(0);
+    ///   co(async move {
+    ///     let s=s.to_async();
+    ///     s.send("World").await;
+    ///   });
+    ///   let name=r.recv()?;
+    ///   println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[cfg(feature = "async")]
+    pub fn to_async(self) -> AsyncSender<T> {
+        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        unsafe { transmute(self) }
+    }
+
+    /// Borrows Sender as AsyncSender and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use tokio::{spawn as co};
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded(0);
+    ///   co(async move {
+    ///     s.as_async().send("World").await;
+    ///   });
+    ///   let name=r.recv()?;
+    ///   println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[cfg(feature = "async")]
+    pub fn as_async(&self) -> &AsyncSender<T> {
+        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        unsafe { transmute(self) }
+    }
     shared_impl!();
 }
 
@@ -806,14 +843,14 @@ impl<T> AsyncSender<T> {
             SendFuture {
                 state: FutureState::Zero,
                 internal: &self.internal,
-                sig: AsyncSignal::new(),
+                sig: Signal::new_async(),
                 data: MaybeUninit::new(data),
             }
         } else {
             SendFuture {
                 state: FutureState::Zero,
                 internal: &self.internal,
-                sig: AsyncSignal::new_inside_ptr(KanalPtr::new_owned(data)),
+                sig: Signal::new_async_ptr(KanalPtr::new_owned(data)),
                 data: MaybeUninit::uninit(),
             }
         }
@@ -840,6 +877,51 @@ impl<T> AsyncSender<T> {
         Sender::<T> {
             internal: self.internal.clone(),
         }
+    }
+
+    /// Converts AsyncSender to Sender and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded_async(0);
+    ///   // move to sync environment
+    ///   std::thread::spawn(move || {
+    ///     let s=s.to_sync();
+    ///     s.send("World")?;
+    ///     anyhow::Ok(())
+    ///   });
+    ///   let name=r.recv().await?;
+    ///   println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    pub fn to_sync(self) -> Sender<T> {
+        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        unsafe { transmute(self) }
+    }
+
+    /// Borrows AsyncSender as Sender and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded_async(0);
+    ///   // move to sync environment
+    ///   std::thread::spawn(move || {
+    ///     s.as_sync().send("World")?;
+    ///     anyhow::Ok(())
+    ///   });
+    ///   let name=r.recv().await?;
+    ///   println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    pub fn as_sync(&self) -> &Sender<T> {
+        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        unsafe { transmute(self) }
     }
 
     shared_impl!();
@@ -905,11 +987,8 @@ impl<T> Receiver<T> {
             }
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
-            let _ret_address_holder = &ret;
-
-            let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-            let _sig_address_holder = &sig;
-            internal.push_recv(sig.as_signal());
+            let sig = Signal::new_sync(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
+            internal.push_recv(sig.get_terminator());
             drop(internal);
 
             if !sig.wait() {
@@ -953,11 +1032,8 @@ impl<T> Receiver<T> {
             }
             // no active waiter so push to the queue
             let mut ret = MaybeUninit::<T>::uninit();
-            let _ret_address_holder = &ret;
-
-            let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-            let _sig_address_holder = &sig;
-            internal.push_recv(sig.as_signal());
+            let sig = Signal::new_sync(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
+            internal.push_recv(sig.get_terminator());
             drop(internal);
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
@@ -965,7 +1041,7 @@ impl<T> Receiver<T> {
                 }
                 {
                     let mut internal = acquire_internal(&self.internal);
-                    if internal.cancel_recv_signal(sig.as_signal()) {
+                    if internal.cancel_recv_signal(&sig) {
                         return Err(ReceiveErrorTimeout::Timeout);
                     }
                 }
@@ -995,6 +1071,54 @@ impl<T> Receiver<T> {
             internal: self.internal.clone(),
         }
     }
+
+    /// Converts Receiver to AsyncReceiver and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use tokio::{spawn as co};
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded(0);
+    ///   co(async move {
+    ///     let r=r.to_async();
+    ///     let name=r.recv().await?;
+    ///     println!("Hello {}!",name);
+    ///     anyhow::Ok(())
+    ///   });
+    ///   s.send("World")?;
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[cfg(feature = "async")]
+    pub fn to_async(self) -> AsyncReceiver<T> {
+        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        unsafe { transmute(self) }
+    }
+
+    /// Borrows Receiver as AsyncReceiver and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use tokio::{spawn as co};
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded(0);
+    ///   co(async move {
+    ///     let name=r.as_async().recv().await?;
+    ///     println!("Hello {}!",name);
+    ///     anyhow::Ok(())
+    ///   });
+    ///   s.send("World")?;
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[cfg(feature = "async")]
+    pub fn as_async(&self) -> &AsyncReceiver<T> {
+        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        unsafe { transmute(self) }
+    }
+
     shared_impl!();
 }
 
@@ -1087,6 +1211,52 @@ impl<T> AsyncReceiver<T> {
             internal: self.internal.clone(),
         }
     }
+
+    /// Converts AsyncReceiver to Receiver and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded_async(0);
+    ///   // move to sync environment
+    ///   std::thread::spawn(move || {
+    ///     let r=r.to_sync();
+    ///     let name=r.recv()?;
+    ///     println!("Hello {}!",name);
+    ///     anyhow::Ok(())
+    ///   });
+    ///   s.send("World").await?;
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    pub fn to_sync(self) -> Receiver<T> {
+        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        unsafe { transmute(self) }
+    }
+
+    /// Borrows AsyncReceiver as Receiver and returns it
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use std::time::Duration;
+    ///   let (s, r) = kanal::bounded_async(0);
+    ///   // move to sync environment
+    ///   std::thread::spawn(move || {
+    ///     let name=r.as_sync().recv()?;
+    ///     println!("Hello {}!",name);
+    ///     anyhow::Ok(())
+    ///   });
+    ///   s.send("World").await?;
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    pub fn as_sync(&self) -> &Receiver<T> {
+        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        unsafe { transmute(self) }
+    }
+
     shared_impl!();
 }
 
@@ -1095,7 +1265,7 @@ impl<T> Drop for Receiver<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count > 0 {
             internal.recv_count -= 1;
-            if internal.recv_count == 0 {
+            if internal.recv_count == 0 && internal.send_count != 0 {
                 internal.terminate_signals();
             }
         }
@@ -1108,7 +1278,7 @@ impl<T> Drop for AsyncReceiver<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count > 0 {
             internal.recv_count -= 1;
-            if internal.recv_count == 0 {
+            if internal.recv_count == 0 && internal.send_count != 0 {
                 internal.terminate_signals();
             }
         }
