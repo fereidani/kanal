@@ -218,6 +218,13 @@ impl<T> Signal<T> {
         Self::wake(this, UNLOCKED);
     }
 
+    /// Sends object to receive signal by coping the pointer
+    /// Safety: it's only safe to be called only once on the receive signals that are not terminated
+    pub(crate) unsafe fn send_copy(this: *const Self, d: *const T) {
+        (*this).ptr.copy(d);
+        Self::wake(this, UNLOCKED);
+    }
+
     /// Receives object from send signal
     /// Safety: it's only safe to be called only once on send signals that are not terminated
     pub(crate) unsafe fn recv(this: *const Self) -> T {
@@ -256,6 +263,9 @@ impl<T> From<*const Signal<T>> for SignalTerminator<T> {
 impl<T> SignalTerminator<T> {
     pub(crate) unsafe fn send(self, data: T) {
         Signal::send(self.0, data)
+    }
+    pub(crate) unsafe fn send_copy(self, data: *const T) {
+        Signal::send_copy(self.0, data)
     }
     pub(crate) unsafe fn recv(self) -> T {
         Signal::recv(self.0)

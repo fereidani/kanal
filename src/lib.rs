@@ -31,7 +31,7 @@ use std::fmt;
 use std::fmt::Debug;
 #[cfg(feature = "async")]
 use std::mem::transmute;
-use std::mem::{forget, needs_drop, size_of, MaybeUninit};
+use std::mem::{needs_drop, size_of, MaybeUninit};
 use std::time::{Duration, Instant};
 
 /// Sending side of the channel in sync mode.
@@ -594,12 +594,17 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send(&self, mut data: T) -> Result<(), SendError> {
+    pub fn send(&self, data: T) -> Result<(), SendError> {
+        let mut data = MaybeUninit::new(data);
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
             let send_count = internal.send_count;
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
+            // Safety: data failed to move, sender should drop it if it needs to
+            if needs_drop::<T>() {
+                unsafe { data.assume_init_drop() }
+            }
             if send_count == 0 {
                 return Err(SendError::Closed);
             }
@@ -608,22 +613,23 @@ impl<T> Sender<T> {
         if let Some(first) = internal.next_recv() {
             drop(internal);
             // Safety: it's safe to send to owned signal once
-            unsafe { first.send(data) }
+            unsafe { first.send_copy(data.as_ptr()) }
             Ok(())
         } else if internal.queue.len() < internal.capacity {
-            internal.queue.push_back(data);
+            // Safety: MaybeUninit is acting like a ManuallyDrop
+            internal.queue.push_back(unsafe { data.assume_init() });
             Ok(())
         } else {
             // send directly to the waitlist
-            let sig = Signal::new_sync(KanalPtr::new_from(&mut data));
+            let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
             internal.push_send(sig.get_terminator());
             drop(internal);
             if !sig.wait() {
+                // Safety: data failed to move, sender should drop it if it needs to
+                if needs_drop::<T>() {
+                    unsafe { data.assume_init_drop() }
+                }
                 return Err(SendError::Closed);
-            }
-            // data semantically is moved so forget about dropping it if it requires dropping
-            if needs_drop::<T>() {
-                forget(data);
             }
             Ok(())
         }
@@ -646,13 +652,18 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send_timeout(&self, mut data: T, duration: Duration) -> Result<(), SendErrorTimeout> {
+    pub fn send_timeout(&self, data: T, duration: Duration) -> Result<(), SendErrorTimeout> {
+        let mut data = MaybeUninit::new(data);
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count == 0 {
             let send_count = internal.send_count;
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
+            // Safety: data failed to move, sender should drop it if it needs to
+            if needs_drop::<T>() {
+                unsafe { data.assume_init_drop() }
+            }
             if send_count == 0 {
                 return Err(SendErrorTimeout::Closed);
             }
@@ -661,18 +672,23 @@ impl<T> Sender<T> {
         if let Some(first) = internal.next_recv() {
             drop(internal);
             // Safety: it's safe to send to owned signal once
-            unsafe { first.send(data) }
+            unsafe { first.send_copy(data.as_ptr()) }
             Ok(())
         } else if internal.queue.len() < internal.capacity {
-            internal.queue.push_back(data);
+            // Safety: MaybeUninit is used as a ManuallyDrop, and data in it is valid.
+            internal.queue.push_back(unsafe { data.assume_init() });
             Ok(())
         } else {
             // send directly to the waitlist
-            let sig = Signal::new_sync(KanalPtr::new_from(&mut data));
+            let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
             internal.push_send(sig.get_terminator());
             drop(internal);
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
+                    // Safety: data failed to move, sender should drop it if it needs to
+                    if needs_drop::<T>() {
+                        unsafe { data.assume_init_drop() }
+                    }
                     return Err(SendErrorTimeout::Closed);
                 }
                 {
@@ -683,12 +699,12 @@ impl<T> Sender<T> {
                 }
                 // removing receive failed to wait for the signal response
                 if !sig.wait() {
+                    // Safety: data failed to move, sender should drop it if it needs to
+                    if needs_drop::<T>() {
+                        unsafe { data.assume_init_drop() }
+                    }
                     return Err(SendErrorTimeout::Closed);
                 }
-            }
-            // data semantically is moved so forget about dropping it if it requires dropping
-            if std::mem::needs_drop::<T>() {
-                std::mem::forget(data);
             }
             Ok(())
         }

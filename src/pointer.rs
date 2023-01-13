@@ -21,9 +21,9 @@ impl<T> KanalPtr<T> {
     /// Creates a KanalPtr from mut reference without forgetting or taking ownership
     /// Creator side should take care of forgetting the object after move action is completed.
     #[inline(always)]
-    pub(crate) fn new_from(addr: &mut T) -> Self {
+    pub(crate) fn new_from(addr: *mut T) -> Self {
         if size_of::<T>() > size_of::<*mut T>() {
-            Self(MaybeUninit::new(addr as *mut T).into())
+            Self(MaybeUninit::new(addr).into())
         } else {
             // Safety: addr is valid memory object
             Self(unsafe { store_as_kanal_ptr(addr).into() })
@@ -76,7 +76,7 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) unsafe fn write(&self, d: T) {
         if size_of::<T>() > size_of::<*mut T>() {
-            // Data cant be stored as pointer value, move it to pointer location
+            // Data can't be stored as pointer value, move it to pointer location
             ptr::write((*self.0.get()).assume_init(), d);
         } else {
             if size_of::<T>() > 0 {
@@ -84,6 +84,19 @@ impl<T> KanalPtr<T> {
                 *self.0.get() = store_as_kanal_ptr(&d);
             }
             forget(d);
+        }
+    }
+    /// Writes data based on movement protocol of KanalPtr based on size of T
+    #[inline(always)]
+    pub(crate) unsafe fn copy(&self, d: *const T) {
+        if size_of::<T>() > size_of::<*mut T>() {
+            // Data can't be stored as pointer value, move it to pointer location
+            ptr::copy_nonoverlapping(d, (*self.0.get()).assume_init(), 1);
+        } else {
+            if size_of::<T>() > 0 {
+                // Data size is less or equal to pointer size, serialize data as pointer address
+                *self.0.get() = store_as_kanal_ptr(d);
+            }
         }
     }
 }

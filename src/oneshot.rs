@@ -215,10 +215,11 @@ impl<T> Drop for OneshotSender<T> {
 impl<T> OneshotSender<T> {
     /// Sends a message to the channel and consumes the send side
     #[inline(always)]
-    pub fn send(self, mut data: T) -> Result<(), T> {
+    pub fn send(self, data: T) -> Result<(), T> {
+        let mut data = MaybeUninit::new(data);
         // Safety: other side can't drop internal, if this side is not in finishing stage
         let internal = unsafe { self.internal_ptr.as_ref() };
-        let sig = Signal::new_sync(KanalPtr::new_from(&mut data));
+        let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
         loop {
             match internal.try_win_race(&sig) {
                 ActionResult::Ok => {
@@ -229,11 +230,8 @@ impl<T> OneshotSender<T> {
                         forget(self);
                     }
                     if !success {
-                        return Err(data);
-                    }
-                    // data semantically is moved so forget about dropping it if it requires dropping
-                    if std::mem::needs_drop::<T>() {
-                        std::mem::forget(data);
+                        // Safety: data is inited for sure and is the only single copy of the object
+                        return Err(unsafe { data.assume_init() });
                     }
                     return Ok(());
                 }
@@ -243,7 +241,7 @@ impl<T> OneshotSender<T> {
                         ActionResult::Ok => {
                             // Safety: recv_signal is guaranteed to be valid due to failed race situation
                             unsafe {
-                                SignalTerminator::from(receiver).send(data);
+                                SignalTerminator::from(receiver).send_copy(data.as_ptr());
                             }
                             // Other side is responsible for dropping
                             forget(self);
@@ -262,7 +260,8 @@ impl<T> OneshotSender<T> {
                         self.internal_ptr.drop();
                         forget(self);
                     }
-                    return Err(data);
+                    // Safety: data is inited for sure and is the only single copy of the object
+                    return Err(unsafe { data.assume_init() });
                 }
             };
         }
@@ -287,7 +286,6 @@ impl<T> Debug for OneshotAsyncSender<T> {
 }
 #[cfg(feature = "async")]
 impl<T> Drop for OneshotAsyncSender<T> {
-    #[inline(always)]
     fn drop(&mut self) {
         try_drop_send_internal(self.internal_ptr);
     }
