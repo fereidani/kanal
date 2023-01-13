@@ -92,11 +92,9 @@ impl<T> KanalPtr<T> {
         if size_of::<T>() > size_of::<*mut T>() {
             // Data can't be stored as pointer value, move it to pointer location
             ptr::copy_nonoverlapping(d, (*self.0.get()).assume_init(), 1);
-        } else {
-            if size_of::<T>() > 0 {
-                // Data size is less or equal to pointer size, serialize data as pointer address
-                *self.0.get() = store_as_kanal_ptr(d);
-            }
+        } else if size_of::<T>() > 0 {
+            // Data size is less or equal to pointer size, serialize data as pointer address
+            *self.0.get() = store_as_kanal_ptr(d);
         }
     }
 }
