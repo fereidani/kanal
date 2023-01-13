@@ -29,10 +29,7 @@ enum ActionResult<T> {
 
 impl<T> ActionResult<T> {
     fn is_ok(&self) -> bool {
-        match self {
-            ActionResult::Ok => true,
-            _ => false,
-        }
+        matches!(self, ActionResult::Ok)
     }
 }
 
@@ -56,12 +53,12 @@ impl<T> From<Result<usize, usize>> for ActionResult<T> {
 
 struct OneshotInternal<T> {
     ptr: AtomicUsize,
-    phanton: PhantomData<T>,
+    _phantom: PhantomData<Option<T>>,
 }
 
 struct OneshotInternalPointer<T> {
     ptr: *mut OneshotInternal<T>,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomData<Option<T>>,
 }
 
 impl<T> Clone for OneshotInternalPointer<T> {
@@ -453,7 +450,7 @@ impl<T> OneshotAsyncReceiver<T> {
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
         ptr: (WAITING as usize).into(),
-        phanton: PhantomData,
+        _phantom: PhantomData,
     }));
     (
         OneshotSender {
@@ -476,7 +473,7 @@ pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
 pub fn oneshot_async<T>() -> (OneshotAsyncSender<T>, OneshotAsyncReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
         ptr: (WAITING as usize).into(),
-        phanton: PhantomData,
+        _phantom: PhantomData,
     }));
     (
         OneshotAsyncSender {
@@ -599,7 +596,7 @@ impl<T> Future for OneshotSendFuture<T> {
                     }
                     this.sig.register_waker(cx.waker());
 
-                    match internal.try_win_race(&mut this.sig) {
+                    match internal.try_win_race(&this.sig) {
                         ActionResult::Ok => {
                             this.state = FutureState::Waiting;
                             return Poll::Pending;
@@ -661,7 +658,7 @@ impl<T> Future for OneshotSendFuture<T> {
                             if !this.sig.will_wake(cx.waker()) {
                                 // the Waker is changed and we need to update waker, but we can't because it's possible to simultaneously other side pick the signal
                                 //    and receive mutable access to it, so we will try to reset state to racing, update waker, then trying to win the signal pointer again
-                                if internal.try_reset(&mut this.sig).is_ok() {
+                                if internal.try_reset(&this.sig).is_ok() {
                                     // Signal pointer is released, participate in the race again
                                     this.state = FutureState::Waiting;
                                     continue;
@@ -714,7 +711,7 @@ impl<T> Future for OneshotReceiveFuture<T> {
                     }
                     this.sig.register_waker(cx.waker());
 
-                    match internal.try_win_race(&mut this.sig) {
+                    match internal.try_win_race(&this.sig) {
                         ActionResult::Ok => {
                             this.state = FutureState::Waiting;
                             return Poll::Pending;
@@ -772,7 +769,7 @@ impl<T> Future for OneshotReceiveFuture<T> {
                             if !this.sig.will_wake(cx.waker()) {
                                 // the Waker is changed and we need to update waker, but we can't because it's possible to simultaneously other side pick the signal
                                 //    and receive mutable access to it, so we will try to reset state to racing, update waker, then trying to win the signal pointer again
-                                if internal.try_reset(&mut this.sig).is_ok() {
+                                if internal.try_reset(&this.sig).is_ok() {
                                     // Signal pointer is released, participate in the race again
                                     this.state = FutureState::Waiting;
                                     continue;
