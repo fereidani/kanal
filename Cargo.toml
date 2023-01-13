@@ -6,17 +6,16 @@ authors = ["Khashayar Fereidani"]
 description = "The fast sync and async channel that Rust deserves"
 repository = "https://github.com/fereidani/kanal"
 documentation = "https://docs.rs/kanal"
-keywords = ["channel", "mpsc", "mpmc", "async", "golang"]
-categories = ["concurrency", "data-structures","asynchronous"]
+keywords = ["channel", "mpsc", "mpmc", "async", "oneshot"]
+categories = ["concurrency", "data-structures", "asynchronous"]
 license = "MIT"
 readme = "README.md"
 
 [dependencies]
-futures-core = "0.3"
+futures-core = {version="0.3", optional = true}
 lock_api = "0.4"
-pin-project-lite = "0.2"
 
-[target.'cfg(any(target_os = "linux",target_os = "android",target_os = "openbsd",target_os = "freebsd",target_os = "dragonbsd"))'.dependencies]
+[target.'cfg(any(target_os = "linux",target_os = "android",target_os = "openbsd",target_os = "freebsd",target_os = "dragonfly"))'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
@@ -26,6 +25,6 @@ tokio = { version = "1", features =["rt-multi-thread", "test-util", "macros"] }
 futures = "0.3"
 
 [features]
-async=[]
-std-mutex=[]
+async = ["futures-core"]
+std-mutex = []
 default = ["async"]
