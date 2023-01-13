@@ -308,7 +308,7 @@ mod imp {
         fn wait(&self) {
             while {
                 std::thread::park();
-                self.waiting.load(Ordering::Relaxed) == true
+                self.waiting.load(Ordering::Relaxed)
             } {}
         }
 
