@@ -1,13 +1,11 @@
+use crate::{pointer::KanalPtr, signal::*, OneshotReceiveError};
 #[cfg(feature = "async")]
-use crate::state::UNLOCKED;
-#[cfg(feature = "async")]
-use crate::FutureState;
-use crate::{pointer::KanalPtr, signal::*};
+use crate::{state::UNLOCKED, FutureState};
 #[cfg(feature = "async")]
 use futures_core::Future;
 use std::{
     fmt::Debug,
-    marker::PhantomData,
+    marker::{PhantomData, PhantomPinned},
     mem::{forget, size_of, MaybeUninit},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -308,7 +306,7 @@ impl<T> Drop for OneshotReceiver<T> {
 impl<T> OneshotReceiver<T> {
     /// Receives a message from the channel and consumes the receive side
     #[inline(always)]
-    pub fn recv(self) -> Result<T, ()> {
+    pub fn recv(self) -> Result<T, OneshotReceiveError> {
         // Safety: other side can't drop internal, if this side is not in finishing stage
         let internal = unsafe { self.internal_ptr.as_ref() };
         let mut ret = MaybeUninit::<T>::uninit();
@@ -325,7 +323,7 @@ impl<T> OneshotReceiver<T> {
                         forget(self);
                     }
                     if !success {
-                        return Err(());
+                        return Err(OneshotReceiveError());
                     }
                     // Safety: it's safe to assume init as data is forgotten on another side
                     return if size_of::<T>() > size_of::<*mut T>() {
@@ -353,7 +351,7 @@ impl<T> OneshotReceiver<T> {
                                 self.internal_ptr.drop();
                                 forget(self);
                             }
-                            return Err(());
+                            return Err(OneshotReceiveError());
                         }
                         _ => unreachable!(),
                     }
@@ -364,7 +362,7 @@ impl<T> OneshotReceiver<T> {
                         self.internal_ptr.drop();
                         forget(self);
                     }
-                    return Err(());
+                    return Err(OneshotReceiveError());
                 }
             };
         }
@@ -437,6 +435,7 @@ impl<T> OneshotAsyncReceiver<T> {
             internal_ptr,
             sig: Signal::new_async(),
             data: MaybeUninit::uninit(),
+            _pinned: PhantomPinned,
         }
     }
     /// Converts async receiver to sync variant of it to be used in sync context
@@ -502,29 +501,52 @@ pub struct OneshotSendFuture<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T> OneshotSendFuture<T> {
-    /// # Safety
-    /// it's only safe to call this function once and only if send operation will finish after this call.
+impl<T> Drop for OneshotSendFuture<T> {
     #[inline(always)]
-    unsafe fn read_local_data(&self) -> T {
-        if size_of::<T>() > size_of::<*mut T>() {
-            // if its smaller than register size, it does not need pointer setup as data will be stored in register address object
-            std::ptr::read(self.data.as_ptr())
-        } else {
-            self.sig.assume_init()
-        }
-    }
-    /// # Safety
-    /// it's only safe to call this function once and only if send operation fails
-    #[inline(always)]
-    unsafe fn drop_local_data(&mut self) {
-        if size_of::<T>() > size_of::<*mut T>() {
-            self.data.assume_init_drop();
-        } else {
-            self.sig.load_and_drop();
+    fn drop(&mut self) {
+        match self.state {
+            FutureState::Zero => {
+                try_drop_send_internal(self.internal_ptr);
+            }
+            FutureState::Waiting => {
+                // If local state is waiting, this side won the signal pointer, loser will never go to waiting state under no condition.
+                // Safety: other side can't drop internal, if this side is not in finishing stage
+                let internal = unsafe { self.internal_ptr.as_ref() };
+                match internal.try_finish(&self.sig) {
+                    ActionResult::Ok => {
+                        // Otherside is responsible for dropping internal
+                        // This future can't return the owned send data as error so it should drop it
+                        if needs_drop::<T>() {
+                            unsafe {
+                                self.drop_local_data();
+                            }
+                        }
+                    }
+                    ActionResult::Racing | ActionResult::Winner(_) => unreachable!(),
+                    ActionResult::Finish => {
+                        // otherside already received signal wait for the result
+                        if !self.sig.async_blocking_wait() {
+                            // This future can't return the owned send data as error so it should drop it
+                            if needs_drop::<T>() {
+                                unsafe {
+                                    self.drop_local_data();
+                                }
+                            }
+                        }
+                        // Safety: winner is this side and transfer is done, this side is responsible for dropping the internal
+                        unsafe {
+                            self.internal_ptr.drop();
+                        }
+                    }
+                }
+            }
+            FutureState::Done => {
+                // No action required, when future reaches .join().unwrap();the done state, it already handled the internal_ptr drop in its future execution
+            }
         }
     }
 }
+
 #[cfg(feature = "async")]
 impl<T> Debug for OneshotSendFuture<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -532,25 +554,8 @@ impl<T> Debug for OneshotSendFuture<T> {
     }
 }
 
-/// Oneshot channel receive future that asynchronously receives data from oneshot sender
-#[must_use = "futures do nothing unless you .await or poll them"]
 #[cfg(feature = "async")]
-pub struct OneshotReceiveFuture<T> {
-    state: FutureState,
-    internal_ptr: OneshotInternalPointer<T>,
-    sig: Signal<T>,
-    data: MaybeUninit<T>,
-}
-
-#[cfg(feature = "async")]
-impl<T> Debug for OneshotReceiveFuture<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "OneshotReceiveFuture {{ .. }}")
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T> OneshotReceiveFuture<T> {
+impl<T> OneshotSendFuture<T> {
     /// # Safety
     /// it's only safe to call this function once and only if send operation will finish after this call.
     #[inline(always)]
@@ -689,9 +694,93 @@ impl<T> Future for OneshotSendFuture<T> {
     }
 }
 
+/// Oneshot channel receive future that asynchronously receives data from oneshot sender
+#[must_use = "futures do nothing unless you .await or poll them"]
+#[cfg(feature = "async")]
+pub struct OneshotReceiveFuture<T> {
+    state: FutureState,
+    internal_ptr: OneshotInternalPointer<T>,
+    sig: Signal<T>,
+    data: MaybeUninit<T>,
+    _pinned: PhantomPinned,
+}
+
+#[cfg(feature = "async")]
+impl<T> Drop for OneshotReceiveFuture<T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        match self.state {
+            FutureState::Zero => {
+                try_drop_recv_internal(self.internal_ptr);
+            }
+            FutureState::Waiting => {
+                // If local state is waiting, this side won the signal pointer, loser will never go to waiting state under no condition.
+                // Safety: other side can't drop internal, if this side is not in finishing stage
+                let internal = unsafe { self.internal_ptr.as_ref() };
+                match internal.try_finish(&self.sig) {
+                    ActionResult::Ok => {
+                        // Otherside is responsible for dropping internal
+                    }
+                    ActionResult::Racing | ActionResult::Winner(_) => unreachable!(),
+                    ActionResult::Finish => {
+                        // otherside already received signal wait for the result
+                        if self.sig.async_blocking_wait() {
+                            // to avoid memory leaks receiver should drop the local data as it can't return it
+                            if needs_drop::<T>() {
+                                unsafe {
+                                    self.drop_local_data();
+                                }
+                            }
+                        }
+                        // Safety: winner is this side and transfer is done, this side is responsible for dropping the internal
+                        unsafe {
+                            self.internal_ptr.drop();
+                        }
+                    }
+                }
+            }
+            FutureState::Done => {
+                // No action required, when future reaches the done state, it already handled the internal_ptr drop in its future execution
+            }
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+impl<T> Debug for OneshotReceiveFuture<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OneshotReceiveFuture {{ .. }}")
+    }
+}
+
+#[cfg(feature = "async")]
+impl<T> OneshotReceiveFuture<T> {
+    /// # Safety
+    /// it's only safe to call this function once and only if send operation will finish after this call.
+    #[inline(always)]
+    unsafe fn read_local_data(&self) -> T {
+        if size_of::<T>() > size_of::<*mut T>() {
+            // if its smaller than register size, it does not need pointer setup as data will be stored in register address object
+            std::ptr::read(self.data.as_ptr())
+        } else {
+            self.sig.assume_init()
+        }
+    }
+    /// # Safety
+    /// it's only safe to call this function once and only if send operation fails
+    #[inline(always)]
+    unsafe fn drop_local_data(&mut self) {
+        if size_of::<T>() > size_of::<*mut T>() {
+            self.data.assume_init_drop();
+        } else {
+            self.sig.load_and_drop();
+        }
+    }
+}
+
 #[cfg(feature = "async")]
 impl<T> Future for OneshotReceiveFuture<T> {
-    type Output = Result<T, ()>;
+    type Output = Result<T, OneshotReceiveError>;
     #[inline(always)]
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -737,7 +826,7 @@ impl<T> Future for OneshotReceiveFuture<T> {
                                 unsafe {
                                     this.internal_ptr.drop();
                                 }
-                                return Poll::Ready(Err(()));
+                                return Poll::Ready(Err(OneshotReceiveError()));
                             }
                         },
                         ActionResult::Finish => {
@@ -746,7 +835,7 @@ impl<T> Future for OneshotReceiveFuture<T> {
                             unsafe {
                                 this.internal_ptr.drop();
                             }
-                            return Poll::Ready(Err(()));
+                            return Poll::Ready(Err(OneshotReceiveError()));
                         }
                     }
                 }
@@ -763,7 +852,7 @@ impl<T> Future for OneshotReceiveFuture<T> {
                                 // Safety: transfer was successfull and local data is valid to read
                                 return Poll::Ready(Ok(unsafe { this.read_local_data() }));
                             }
-                            return Poll::Ready(Err(()));
+                            return Poll::Ready(Err(OneshotReceiveError()));
                         }
                         Poll::Pending => {
                             if !this.sig.will_wake(cx.waker()) {
@@ -786,7 +875,7 @@ impl<T> Future for OneshotReceiveFuture<T> {
                                 if success {
                                     return Poll::Ready(Ok(unsafe { this.read_local_data() }));
                                 }
-                                return Poll::Ready(Err(()));
+                                return Poll::Ready(Err(OneshotReceiveError()));
                             }
 
                             return Poll::Pending;
@@ -796,94 +885,6 @@ impl<T> Future for OneshotReceiveFuture<T> {
                 FutureState::Done => {
                     panic!("result has already been returned")
                 }
-            }
-        }
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T> Drop for OneshotSendFuture<T> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        match self.state {
-            FutureState::Zero => {
-                try_drop_send_internal(self.internal_ptr);
-            }
-            FutureState::Waiting => {
-                // If local state is waiting, this side won the signal pointer, loser will never go to waiting state under no condition.
-                // Safety: other side can't drop internal, if this side is not in finishing stage
-                let internal = unsafe { self.internal_ptr.as_ref() };
-                match internal.try_finish(&self.sig) {
-                    ActionResult::Ok => {
-                        // Otherside is responsible for dropping internal
-                        // This future can't return the owned send data as error so it should drop it
-                        if needs_drop::<T>() {
-                            unsafe {
-                                self.drop_local_data();
-                            }
-                        }
-                    }
-                    ActionResult::Racing | ActionResult::Winner(_) => unreachable!(),
-                    ActionResult::Finish => {
-                        // otherside already received signal wait for the result
-                        if !self.sig.async_blocking_wait() {
-                            // This future can't return the owned send data as error so it should drop it
-                            if needs_drop::<T>() {
-                                unsafe {
-                                    self.drop_local_data();
-                                }
-                            }
-                        }
-                        // Safety: winner is this side and transfer is done, this side is responsible for dropping the internal
-                        unsafe {
-                            self.internal_ptr.drop();
-                        }
-                    }
-                }
-            }
-            FutureState::Done => {
-                // No action required, when future reaches .join().unwrap();the done state, it already handled the internal_ptr drop in its future execution
-            }
-        }
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T> Drop for OneshotReceiveFuture<T> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        match self.state {
-            FutureState::Zero => {
-                try_drop_recv_internal(self.internal_ptr);
-            }
-            FutureState::Waiting => {
-                // If local state is waiting, this side won the signal pointer, loser will never go to waiting state under no condition.
-                // Safety: other side can't drop internal, if this side is not in finishing stage
-                let internal = unsafe { self.internal_ptr.as_ref() };
-                match internal.try_finish(&self.sig) {
-                    ActionResult::Ok => {
-                        // Otherside is responsible for dropping internal
-                    }
-                    ActionResult::Racing | ActionResult::Winner(_) => unreachable!(),
-                    ActionResult::Finish => {
-                        // otherside already received signal wait for the result
-                        if self.sig.async_blocking_wait() {
-                            // to avoid memory leaks receiver should drop the local data as it can't return it
-                            if needs_drop::<T>() {
-                                unsafe {
-                                    self.drop_local_data();
-                                }
-                            }
-                        }
-                        // Safety: winner is this side and transfer is done, this side is responsible for dropping the internal
-                        unsafe {
-                            self.internal_ptr.drop();
-                        }
-                    }
-                }
-            }
-            FutureState::Done => {
-                // No action required, when future reaches the done state, it already handled the internal_ptr drop in its future execution
             }
         }
     }
