@@ -1,13 +1,18 @@
-use crate::backoff;
-use crate::pointer::KanalPtr;
-use crate::state::*;
-use crate::sync::{SysWait, WaitAPI};
-use std::sync::atomic::{fence, Ordering};
+use crate::{
+    backoff,
+    pointer::KanalPtr,
+    state::*,
+    sync::{SysWait, WaitAPI},
+};
+use std::{
+    sync::atomic::{fence, Ordering},
+    time::Instant,
+};
 #[cfg(feature = "async")]
-use std::task::{Poll, Waker};
-#[cfg(feature = "async")]
-use std::time::Duration;
-use std::time::Instant;
+use std::{
+    task::{Poll, Waker},
+    time::Duration,
+};
 
 #[repr(u8)]
 pub enum KanalWaker {

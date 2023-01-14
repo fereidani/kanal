@@ -1,6 +1,9 @@
-use std::mem::{forget, size_of, zeroed};
-use std::ptr;
-use std::{cell::UnsafeCell, mem::MaybeUninit};
+use std::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    mem::{forget, size_of, zeroed},
+    ptr,
+};
 
 /// Kanal Pointer is a structure to move data efficiently between sync and async context.
 /// This mod transfer data with two different ways between threads:
