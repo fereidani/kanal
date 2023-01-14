@@ -5,18 +5,19 @@ use crate::{state::UNLOCKED, FutureState};
 use futures_core::Future;
 use std::{
     fmt::Debug,
-    marker::{PhantomData, PhantomPinned},
+    marker::PhantomData,
     mem::{forget, size_of, MaybeUninit},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicPtr, Ordering},
 };
 #[cfg(feature = "async")]
 use std::{
+    marker::PhantomPinned,
     mem::{needs_drop, transmute},
     task::Poll,
 };
 
-const WAITING: *const () = std::ptr::null_mut::<()>();
-const FINISHED: *const () = !0usize as *const ();
+const WAITING: *mut () = std::ptr::null_mut::<()>();
+const FINISHED: *mut () = !0usize as *mut ();
 
 enum ActionResult<T> {
     Ok,
@@ -31,15 +32,15 @@ impl<T> ActionResult<T> {
     }
 }
 
-impl<T> From<Result<usize, usize>> for ActionResult<T> {
+impl<T> From<Result<*mut Signal<T>, *mut Signal<T>>> for ActionResult<T> {
     #[inline(always)]
-    fn from(value: Result<usize, usize>) -> Self {
+    fn from(value: Result<*mut Signal<T>, *mut Signal<T>>) -> Self {
         match value {
             Ok(_) => ActionResult::Ok,
             Err(ptr) => {
-                if ptr == WAITING as usize {
+                if ptr == WAITING as *mut Signal<T> {
                     ActionResult::Racing
-                } else if ptr == FINISHED as usize {
+                } else if ptr == FINISHED as *mut Signal<T> {
                     ActionResult::Finish
                 } else {
                     ActionResult::Winner(ptr as *const Signal<T>)
@@ -50,8 +51,7 @@ impl<T> From<Result<usize, usize>> for ActionResult<T> {
 }
 
 struct OneshotInternal<T> {
-    ptr: AtomicUsize,
-    _phantom: PhantomData<Option<T>>,
+    ptr: AtomicPtr<Signal<T>>,
 }
 
 struct OneshotInternalPointer<T> {
@@ -86,8 +86,8 @@ impl<T> OneshotInternal<T> {
     #[inline(always)]
     fn try_win_race(&self, own_ptr: *const Signal<T>) -> ActionResult<T> {
         ActionResult::from(self.ptr.compare_exchange(
-            WAITING as usize,
-            own_ptr as usize,
+            WAITING as *mut Signal<T>,
+            own_ptr as *mut Signal<T>,
             Ordering::AcqRel,
             Ordering::Acquire,
         ))
@@ -98,8 +98,8 @@ impl<T> OneshotInternal<T> {
     #[inline(always)]
     fn try_terminate(&self) -> ActionResult<T> {
         ActionResult::from(self.ptr.compare_exchange(
-            WAITING as usize,
-            FINISHED as usize,
+            WAITING as *mut Signal<T>,
+            FINISHED as *mut Signal<T>,
             Ordering::AcqRel,
             Ordering::Acquire,
         ))
@@ -112,8 +112,8 @@ impl<T> OneshotInternal<T> {
     #[cfg(feature = "async")]
     fn try_reset(&self, own_ptr: *const Signal<T>) -> ActionResult<T> {
         ActionResult::from(self.ptr.compare_exchange(
-            own_ptr as usize,
-            WAITING as usize,
+            own_ptr as *mut Signal<T>,
+            WAITING as *mut Signal<T>,
             Ordering::AcqRel,
             Ordering::Acquire,
         ))
@@ -124,8 +124,8 @@ impl<T> OneshotInternal<T> {
     #[inline(always)]
     fn try_finish(&self, from: *const Signal<T>) -> ActionResult<T> {
         ActionResult::from(self.ptr.compare_exchange(
-            from as usize,
-            FINISHED as usize,
+            from as *mut Signal<T>,
+            FINISHED as *mut Signal<T>,
             Ordering::AcqRel,
             Ordering::Acquire,
         ))
@@ -448,8 +448,7 @@ impl<T> OneshotAsyncReceiver<T> {
 /// Creates new oneshot channel and returns the sender and the receiver for it.
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
-        ptr: (WAITING as usize).into(),
-        _phantom: PhantomData,
+        ptr: (WAITING as *mut Signal<T>).into(),
     }));
     (
         OneshotSender {
@@ -471,8 +470,7 @@ pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
 #[cfg(feature = "async")]
 pub fn oneshot_async<T>() -> (OneshotAsyncSender<T>, OneshotAsyncReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
-        ptr: (WAITING as usize).into(),
-        _phantom: PhantomData,
+        ptr: (WAITING as *mut Signal<T>).into(),
     }));
     (
         OneshotAsyncSender {
