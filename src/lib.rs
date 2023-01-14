@@ -27,12 +27,14 @@ use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal
 pub use oneshot::*;
 use pointer::KanalPtr;
 use signal::*;
-use std::fmt;
-use std::fmt::Debug;
 #[cfg(feature = "async")]
 use std::mem::transmute;
-use std::mem::{needs_drop, size_of, MaybeUninit};
-use std::time::{Duration, Instant};
+use std::{
+    fmt,
+    marker::PhantomPinned,
+    mem::{needs_drop, size_of, MaybeUninit},
+    time::{Duration, Instant},
+};
 
 /// Sending side of the channel in sync mode.
 /// Senders can be cloned and produce senders to operate in both sync and async modes.
@@ -97,7 +99,7 @@ impl<T> Clone for Sender<T> {
     }
 }
 
-impl<T> Debug for Sender<T> {
+impl<T> fmt::Debug for Sender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Sender {{ .. }}")
     }
@@ -117,7 +119,7 @@ impl<T> Clone for AsyncSender<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T> Debug for AsyncSender<T> {
+impl<T> fmt::Debug for AsyncSender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AsyncSender {{ .. }}")
     }
@@ -870,6 +872,7 @@ impl<T> AsyncSender<T> {
                 internal: &self.internal,
                 sig: Signal::new_async(),
                 data: MaybeUninit::new(data),
+                _pinned: PhantomPinned,
             }
         } else {
             SendFuture {
@@ -877,6 +880,7 @@ impl<T> AsyncSender<T> {
                 internal: &self.internal,
                 sig: Signal::new_async_ptr(KanalPtr::new_owned(data)),
                 data: MaybeUninit::uninit(),
+                _pinned: PhantomPinned,
             }
         }
     }
@@ -963,7 +967,7 @@ pub struct Receiver<T> {
     internal: Internal<T>,
 }
 
-impl<T> Debug for Receiver<T> {
+impl<T> fmt::Debug for Receiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Receiver {{ .. }}")
     }
@@ -981,7 +985,7 @@ pub struct AsyncReceiver<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T> Debug for AsyncReceiver<T> {
+impl<T> fmt::Debug for AsyncReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AsyncReceiver {{ .. }}")
     }
