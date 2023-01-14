@@ -90,3 +90,13 @@ impl fmt::Display for ReceiveErrorTimeout {
         )
     }
 }
+
+/// Error type for oneshot channel receive failed operation
+#[derive(Debug, PartialEq, Eq)]
+pub struct OneshotReceiveError();
+impl std::error::Error for OneshotReceiveError {}
+impl fmt::Display for OneshotReceiveError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt("oneshot send side dropped", f)
+    }
+}
