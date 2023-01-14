@@ -1,16 +1,16 @@
-use futures_core::{FusedStream, Future, Stream};
-use std::{
-    fmt::Debug,
-    mem::{needs_drop, size_of, MaybeUninit},
-    pin::Pin,
-    task::Poll,
-};
-
 use crate::{
     internal::{acquire_internal, Internal},
     pointer::KanalPtr,
     signal::Signal,
     state, AsyncReceiver, ReceiveError, SendError,
+};
+use futures_core::{FusedStream, Future, Stream};
+use std::{
+    fmt::Debug,
+    marker::PhantomPinned,
+    mem::{needs_drop, size_of, MaybeUninit},
+    pin::Pin,
+    task::Poll,
 };
 
 #[repr(u8)]
@@ -40,6 +40,7 @@ pub struct SendFuture<'a, T> {
     pub(crate) internal: &'a Internal<T>,
     pub(crate) sig: Signal<T>,
     pub(crate) data: MaybeUninit<T>,
+    pub(crate) _pinned: PhantomPinned,
 }
 
 impl<'a, T> Debug for SendFuture<'a, T> {
@@ -206,10 +207,12 @@ impl<'a, T> Future for SendFuture<'a, T> {
 /// It must be polled to perform receive action
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct ReceiveFuture<'a, T> {
-    pub(crate) state: FutureState,
-    pub(crate) internal: &'a Internal<T>,
-    pub(crate) sig: Signal<T>,
-    pub(crate) data: MaybeUninit<T>,
+    state: FutureState,
+    internal: &'a Internal<T>,
+    sig: Signal<T>,
+    data: MaybeUninit<T>,
+    is_stream: bool,
+    _pinned: PhantomPinned,
 }
 impl<'a, T> Drop for ReceiveFuture<'a, T> {
     fn drop(&mut self) {
@@ -263,12 +266,9 @@ impl<'a, T> ReceiveFuture<'a, T> {
             sig: Signal::new_async(),
             internal,
             data: MaybeUninit::uninit(),
+            is_stream: false,
+            _pinned: PhantomPinned,
         }
-    }
-
-    fn reset(&mut self) {
-        self.state = FutureState::Zero;
-        self.sig = Signal::new_async();
     }
 }
 
@@ -278,89 +278,95 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        match this.state {
-            FutureState::Zero => {
-                let mut internal = acquire_internal(this.internal);
-                if internal.recv_count == 0 {
-                    this.state = FutureState::Done;
-                    return Poll::Ready(Err(ReceiveError::Closed));
-                }
-                if let Some(v) = internal.queue.pop_front() {
-                    if let Some(t) = internal.next_send() {
-                        // if there is a sender take its data and push it into the queue
-                        unsafe { internal.queue.push_back(t.recv()) }
-                    }
-                    drop(internal);
-                    this.state = FutureState::Done;
-                    Poll::Ready(Ok(v))
-                } else if let Some(t) = internal.next_send() {
-                    drop(internal);
-                    this.state = FutureState::Done;
-                    unsafe { Poll::Ready(Ok(t.recv())) }
-                } else {
-                    if internal.send_count == 0 {
+        loop {
+            return match this.state {
+                FutureState::Zero => {
+                    let mut internal = acquire_internal(this.internal);
+                    if internal.recv_count == 0 {
                         this.state = FutureState::Done;
-                        return Poll::Ready(Err(ReceiveError::SendClosed));
+                        return Poll::Ready(Err(ReceiveError::Closed));
                     }
-                    this.state = FutureState::Waiting;
-                    if size_of::<T>() > size_of::<*mut T>() {
-                        // if type T smaller than register size, it does not need pointer setup as data will be stored in register address object
-                        this.sig
-                            .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
-                    }
-                    this.sig.register_waker(cx.waker());
-                    // no active waiter so push to the queue
-                    internal.push_recv(this.sig.get_terminator());
-                    drop(internal);
-                    Poll::Pending
-                }
-            }
-            FutureState::Waiting => {
-                // waker is same no need to update
-                // Safety: this.sig is pinned, sig is pinned too
-                let r = this.sig.poll();
-                match r {
-                    Poll::Ready(v) => {
-                        this.state = FutureState::Done;
-                        if v == state::UNLOCKED {
-                            return Poll::Ready(Ok(unsafe { this.read_local_data() }));
+                    if let Some(v) = internal.queue.pop_front() {
+                        if let Some(t) = internal.next_send() {
+                            // if there is a sender take its data and push it into the queue
+                            unsafe { internal.queue.push_back(t.recv()) }
                         }
-                        Poll::Ready(Err(ReceiveError::Closed))
-                    }
-                    Poll::Pending => {
-                        if !this.sig.will_wake(cx.waker()) {
-                            // the Waker is changed and we need to update waker in the waiting list
-                            {
-                                let internal = acquire_internal(this.internal);
-                                if internal.recv_signal_exists(&this.sig) {
-                                    // signal is not shared with other thread yet so it's safe to update waker locally
-                                    this.sig.register_waker(cx.waker());
-                                    return Poll::Pending;
-                                }
-                            }
-                            // the signal is already shared, and data will be available shortly, so wait synchronously and return the result
-                            // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
-                            //   we can wait synchronously and receive it.
+                        drop(internal);
+                        this.state = FutureState::Done;
+                        Poll::Ready(Ok(v))
+                    } else if let Some(t) = internal.next_send() {
+                        drop(internal);
+                        this.state = FutureState::Done;
+                        unsafe { Poll::Ready(Ok(t.recv())) }
+                    } else {
+                        if internal.send_count == 0 {
                             this.state = FutureState::Done;
-                            if this.sig.async_blocking_wait() {
-                                return Poll::Ready(Ok(unsafe { this.read_local_data() }));
-                            }
-                            return Poll::Ready(Err(ReceiveError::Closed));
+                            return Poll::Ready(Err(ReceiveError::SendClosed));
                         }
+                        this.state = FutureState::Waiting;
+                        if size_of::<T>() > size_of::<*mut T>() {
+                            // if type T smaller than register size, it does not need pointer setup as data will be stored in register address object
+                            this.sig
+                                .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
+                        }
+                        this.sig.register_waker(cx.waker());
+                        // no active waiter so push to the queue
+                        internal.push_recv(this.sig.get_terminator());
+                        drop(internal);
                         Poll::Pending
                     }
                 }
-            }
-            _ => {
-                panic!("polled after result is already returned")
-            }
+                FutureState::Waiting => {
+                    // waker is same no need to update
+                    // Safety: this.sig is pinned, sig is pinned too
+                    let r = this.sig.poll();
+                    match r {
+                        Poll::Ready(v) => {
+                            this.state = FutureState::Done;
+                            if v == state::UNLOCKED {
+                                return Poll::Ready(Ok(unsafe { this.read_local_data() }));
+                            }
+                            Poll::Ready(Err(ReceiveError::Closed))
+                        }
+                        Poll::Pending => {
+                            if !this.sig.will_wake(cx.waker()) {
+                                // the Waker is changed and we need to update waker in the waiting list
+                                {
+                                    let internal = acquire_internal(this.internal);
+                                    if internal.recv_signal_exists(&this.sig) {
+                                        // signal is not shared with other thread yet so it's safe to update waker locally
+                                        this.sig.register_waker(cx.waker());
+                                        return Poll::Pending;
+                                    }
+                                }
+                                // the signal is already shared, and data will be available shortly, so wait synchronously and return the result
+                                // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
+                                //   we can wait synchronously and receive it.
+                                this.state = FutureState::Done;
+                                if this.sig.async_blocking_wait() {
+                                    return Poll::Ready(Ok(unsafe { this.read_local_data() }));
+                                }
+                                return Poll::Ready(Err(ReceiveError::Closed));
+                            }
+                            Poll::Pending
+                        }
+                    }
+                }
+                _ => {
+                    if this.is_stream {
+                        this.state = FutureState::Zero;
+                        continue;
+                    }
+                    panic!("polled after result is already returned")
+                }
+            };
         }
     }
 }
 
 /// Receive stream
 pub struct ReceiveStream<'a, T: 'a> {
-    future: ReceiveFuture<'a, T>,
+    future: Pin<Box<ReceiveFuture<'a, T>>>,
     terminated: bool,
     receiver: &'a AsyncReceiver<T>,
 }
@@ -369,27 +375,23 @@ impl<'a, T> Debug for ReceiveStream<'a, T> {
         write!(f, "ReceiveStream {{ .. }}")
     }
 }
+
 impl<'a, T> Stream for ReceiveStream<'a, T> {
     type Item = T;
 
     fn poll_next(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if this.terminated {
+        if self.terminated {
             return Poll::Ready(None);
         }
         // Safety: future is pinned as stream is pinned to a location too
-        match unsafe { Pin::new_unchecked(&mut this.future).poll(cx) } {
+        match self.future.as_mut().poll(cx) {
             Poll::Ready(res) => match res {
-                Ok(d) => {
-                    this.future.reset();
-                    Poll::Ready(Some(d))
-                }
+                Ok(d) => Poll::Ready(Some(d)),
                 Err(_) => {
-                    this.terminated = true;
+                    self.terminated = true;
                     Poll::Ready(None)
                 }
             },
@@ -406,8 +408,10 @@ impl<'a, T> FusedStream for ReceiveStream<'a, T> {
 
 impl<'a, T> ReceiveStream<'a, T> {
     pub(crate) fn new_borrowed(receiver: &'a AsyncReceiver<T>) -> Self {
+        let mut future = receiver.recv();
+        future.is_stream = true;
         ReceiveStream {
-            future: receiver.recv(),
+            future: Box::pin(future),
             terminated: false,
             receiver,
         }
