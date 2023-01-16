@@ -2,15 +2,23 @@ mod utils;
 use utils::*;
 
 use kanal::{bounded, unbounded, ReceiveError, Receiver, SendError, Sender};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
     match cap {
         None => unbounded(),
         Some(cap) => bounded(cap),
     }
+}
+
+fn delay() {
+    std::thread::sleep(Duration::from_millis(10));
 }
 
 fn mpmc(cap: Option<usize>) {
@@ -129,6 +137,42 @@ fn spsc(cap: Option<usize>) {
 }
 
 #[test]
+fn spsc_delayed_receive() {
+    let (tx, rx) = new(0.into());
+    crossbeam::scope(|scope| {
+        scope.spawn(|_| {
+            for _i in 0..10 {
+                tx.send(Box::new(1)).unwrap();
+            }
+        });
+
+        for _ in 0..10 {
+            delay();
+            assert_eq!(rx.recv().unwrap(), Box::new(1));
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn spsc_delayed_send() {
+    let (tx, rx) = new(0.into());
+    crossbeam::scope(|scope| {
+        scope.spawn(|_| {
+            for _i in 0..10 {
+                delay();
+                tx.send(Box::new(1)).unwrap();
+            }
+        });
+
+        for _ in 0..10 {
+            assert_eq!(rx.recv().unwrap(), Box::new(1));
+        }
+    })
+    .unwrap();
+}
+
+#[test]
 fn integrity_u8() {
     integrity_test!(0u8, !0u8);
 }
@@ -144,8 +188,13 @@ fn integrity_u32() {
 }
 
 #[test]
-fn integrity_usize() {
+fn integrity_u64() {
     integrity_test!(0u64, !0u64);
+}
+
+#[test]
+fn integrity_box_u64() {
+    integrity_test!(Box::new(0u64), Box::new(!0u64));
 }
 
 #[test]
