@@ -2,7 +2,7 @@ use crate::{
     internal::{acquire_internal, Internal},
     pointer::KanalPtr,
     signal::Signal,
-    state, AsyncReceiver, ReceiveError, SendError,
+    AsyncReceiver, ReceiveError, SendError,
 };
 use futures_core::{FusedStream, Future, Stream};
 use std::{
@@ -153,17 +153,18 @@ impl<'a, T> Future for SendFuture<'a, T> {
                 // Safety: this.sig is pinned, sig is pinned too
                 let r = this.sig.poll();
                 match r {
-                    Poll::Ready(v) => {
+                    Poll::Ready(success) => {
                         this.state = FutureState::Done;
-                        if v == state::UNLOCKED {
-                            return Poll::Ready(Ok(()));
+                        if success {
+                            Poll::Ready(Ok(()))
+                        } else {
+                            if needs_drop::<T>() {
+                                // the data failed to move, drop it locally
+                                // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                                unsafe { this.drop_local_data() };
+                            }
+                            Poll::Ready(Err(SendError::Closed))
                         }
-                        if needs_drop::<T>() {
-                            // the data failed to move, drop it locally
-                            // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
-                            unsafe { this.drop_local_data() };
-                        }
-                        Poll::Ready(Err(SendError::Closed))
                     }
                     Poll::Pending => {
                         if !this.sig.will_wake(cx.waker()) {
@@ -321,12 +322,13 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     // Safety: this.sig is pinned, sig is pinned too
                     let r = this.sig.poll();
                     match r {
-                        Poll::Ready(v) => {
+                        Poll::Ready(success) => {
                             this.state = FutureState::Done;
-                            if v == state::UNLOCKED {
-                                return Poll::Ready(Ok(unsafe { this.read_local_data() }));
+                            if success {
+                                Poll::Ready(Ok(unsafe { this.read_local_data() }))
+                            } else {
+                                Poll::Ready(Err(ReceiveError::Closed))
                             }
-                            Poll::Ready(Err(ReceiveError::Closed))
                         }
                         Poll::Pending => {
                             if !this.sig.will_wake(cx.waker()) {

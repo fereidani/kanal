@@ -1,6 +1,6 @@
-use crate::{pointer::KanalPtr, signal::*, OneshotReceiveError};
 #[cfg(feature = "async")]
-use crate::{state::UNLOCKED, FutureState};
+use crate::FutureState;
+use crate::{pointer::KanalPtr, signal::*, OneshotReceiveError};
 #[cfg(feature = "async")]
 use futures_core::Future;
 use std::{
@@ -106,7 +106,7 @@ impl<T> OneshotInternal<T> {
     }
     // It's only used when the owner of signal in async context wants to update its waker
     //  as signal is shared in that context, it's not safe to write to the signal as there will be multiple
-    //  mutable reference to signal, with this method channel resets state to racing if its possible and tries to
+    //  mutable reference to signal, with this method channel resets state to racing if it's possible and tries to
     //  win the race again after updating the signal, the logic is something similiar to the Mutex.
     #[inline(always)]
     #[cfg(feature = "async")]
@@ -234,7 +234,7 @@ impl<T> OneshotSender<T> {
                 ActionResult::Winner(receiver) => {
                     match internal.try_finish(receiver) {
                         ActionResult::Ok => {
-                            // Safety: recv_signal is guaranteed to be valid due to failed race situation
+                            // Safety: receive signal is guaranteed to be valid due to failed race situation
                             unsafe {
                                 SignalTerminator::from(receiver).send_copy(data.as_ptr());
                             }
@@ -645,17 +645,18 @@ impl<T> Future for OneshotSendFuture<T> {
                 FutureState::Waiting => {
                     let r = this.sig.poll();
                     match r {
-                        Poll::Ready(v) => {
+                        Poll::Ready(success) => {
                             this.state = FutureState::Done;
                             // Safety: winner is this side and transfer is done, this side is responsible for dropping the internal
                             unsafe {
                                 this.internal_ptr.drop();
                             }
-                            if v == UNLOCKED {
-                                // Safety: transfer was successfull and local data is valid to read
-                                return Poll::Ready(Ok(()));
-                            }
-                            return Poll::Ready(Err(unsafe { this.read_local_data() }));
+                            return if success {
+                                Poll::Ready(Ok(()))
+                            } else {
+                                // Safety: data movement failed, function returns back sending data to caller
+                                Poll::Ready(Err(unsafe { this.read_local_data() }))
+                            };
                         }
                         Poll::Pending => {
                             if !this.sig.will_wake(cx.waker()) {
@@ -840,17 +841,17 @@ impl<T> Future for OneshotReceiveFuture<T> {
                 FutureState::Waiting => {
                     let r = this.sig.poll();
                     match r {
-                        Poll::Ready(v) => {
+                        Poll::Ready(success) => {
                             this.state = FutureState::Done;
                             // Safety: winner is this side and transfer is done, this side is responsible for dropping the internal
                             unsafe {
                                 this.internal_ptr.drop();
                             }
-                            if v == UNLOCKED {
-                                // Safety: transfer was successfull and local data is valid to read
-                                return Poll::Ready(Ok(unsafe { this.read_local_data() }));
-                            }
-                            return Poll::Ready(Err(OneshotReceiveError()));
+                            return if success {
+                                Poll::Ready(Ok(unsafe { this.read_local_data() }))
+                            } else {
+                                Poll::Ready(Err(OneshotReceiveError()))
+                            };
                         }
                         Poll::Pending => {
                             if !this.sig.will_wake(cx.waker()) {
