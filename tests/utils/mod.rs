@@ -1,13 +1,14 @@
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 #[cfg(not(miri))]
 #[allow(dead_code)]
 pub const MESSAGES: usize = 100000;
 #[cfg(miri)]
 #[allow(dead_code)]
-pub const MESSAGES: usize = 16;
+pub const MESSAGES: usize = 32;
 #[allow(dead_code)]
 pub const THREADS: usize = 8;
 

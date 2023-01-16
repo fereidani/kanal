@@ -2,16 +2,17 @@ mod utils;
 #[cfg(feature = "async")]
 mod asyncs {
     use crate::utils::*;
-
     use futures_core::FusedStream;
-
     use kanal::{
         bounded_async, unbounded_async, AsyncReceiver, AsyncSender, ReceiveError, SendError,
     };
-
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
 
     fn new<T>(cap: Option<usize>) -> (AsyncSender<T>, AsyncReceiver<T>) {
         match cap {
