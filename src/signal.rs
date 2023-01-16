@@ -1,11 +1,8 @@
-use crate::{
-    backoff,
-    pointer::KanalPtr,
-    state::*,
-    sync::{SysWait, WaitAPI},
-};
+use crate::{backoff, pointer::KanalPtr};
 use std::{
-    sync::atomic::{fence, Ordering},
+    cell::UnsafeCell,
+    sync::atomic::{fence, AtomicU8, Ordering},
+    thread::Thread,
     time::Instant,
 };
 #[cfg(feature = "async")]
@@ -14,18 +11,23 @@ use std::{
     time::Duration,
 };
 
+const UNLOCKED: u8 = 0;
+const TERMINATED: u8 = 1;
+const LOCKED: u8 = 2;
+const LOCKED_STARVATION: u8 = 3;
+
 #[repr(u8)]
-pub enum KanalWaker {
+pub(crate) enum KanalWaker {
     #[cfg(feature = "async")]
     None,
-    Sync(SysWait),
+    Sync(UnsafeCell<Option<Thread>>),
     #[cfg(feature = "async")]
     Async(Waker),
 }
 
 /// Signal enum encapsulates both SyncSignal and AsyncSignal to enable them to operate in the same context
 pub struct Signal<T> {
-    state: State,
+    state: AtomicU8,
     ptr: KanalPtr<T>,
     waker: KanalWaker,
 }
@@ -36,7 +38,7 @@ impl<T> Signal<T> {
     #[cfg(feature = "async")]
     pub(crate) fn new_async() -> Self {
         Self {
-            state: State::locked(),
+            state: LOCKED.into(),
             ptr: Default::default(),
             waker: KanalWaker::None,
         }
@@ -44,13 +46,17 @@ impl<T> Signal<T> {
 
     #[inline(always)]
     #[cfg(feature = "async")]
-    pub(crate) fn poll(&self) -> Poll<u8> {
-        let v = self.state.relaxed();
-        if v >= LOCKED {
-            Poll::Pending
-        } else {
+    pub(crate) fn poll(&self) -> Poll<bool> {
+        let v = self.state.load(Ordering::Relaxed);
+        if v < LOCKED {
             fence(Ordering::Acquire);
-            Poll::Ready(v)
+            if v == UNLOCKED {
+                Poll::Ready(true)
+            } else {
+                Poll::Ready(false)
+            }
+        } else {
+            Poll::Pending
         }
     }
 
@@ -59,7 +65,7 @@ impl<T> Signal<T> {
     #[cfg(feature = "async")]
     pub(crate) fn new_async_ptr(ptr: KanalPtr<T>) -> Self {
         Self {
-            state: State::locked(),
+            state: LOCKED.into(),
             ptr,
             waker: KanalWaker::None,
         }
@@ -69,9 +75,9 @@ impl<T> Signal<T> {
     #[inline(always)]
     pub(crate) fn new_sync(ptr: KanalPtr<T>) -> Self {
         Self {
-            state: State::locked(),
+            state: LOCKED.into(),
             ptr,
-            waker: KanalWaker::Sync(SysWait::new()),
+            waker: KanalWaker::Sync(None.into()),
         }
     }
 
@@ -79,7 +85,7 @@ impl<T> Signal<T> {
     #[inline(always)]
     #[cfg(feature = "async")]
     pub(crate) fn async_blocking_wait(&self) -> bool {
-        let v = self.state.relaxed();
+        let v = self.state.load(Ordering::Relaxed);
         if v < LOCKED {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
@@ -88,7 +94,7 @@ impl<T> Signal<T> {
         for _ in 0..32 {
             //backoff::spin_wait(96);
             backoff::yield_now_std();
-            let v = self.state.relaxed();
+            let v = self.state.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
@@ -99,7 +105,7 @@ impl<T> Signal<T> {
         let mut sleep_time: u64 = 1 << 10;
         loop {
             backoff::sleep(Duration::from_nanos(sleep_time));
-            let v = self.state.relaxed();
+            let v = self.state.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
@@ -114,14 +120,14 @@ impl<T> Signal<T> {
     /// Waits for the signal event in sync mode,
     #[inline(always)]
     pub(crate) fn wait(&self) -> bool {
-        let v = self.state.relaxed();
+        let v = self.state.load(Ordering::Relaxed);
         if v < LOCKED {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
         for _ in 0..256 {
             backoff::yield_now_std();
-            let v = self.state.relaxed();
+            let v = self.state.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
@@ -129,10 +135,25 @@ impl<T> Signal<T> {
         }
         match &self.waker {
             KanalWaker::Sync(waker) => {
-                if self.state.upgrade_lock() {
-                    waker.wait()
+                // waker is not shared as the state is not `LOCKED_STARVATION`
+                unsafe {
+                    *waker.get() = Some(std::thread::current());
                 }
-                self.state.acquire() == UNLOCKED
+                match self.state.compare_exchange(
+                    LOCKED,
+                    LOCKED_STARVATION,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => loop {
+                        std::thread::park();
+                        let v = self.state.load(Ordering::Acquire);
+                        if v < LOCKED {
+                            return v == UNLOCKED;
+                        }
+                    },
+                    Err(v) => v == UNLOCKED,
+                }
             }
             #[cfg(feature = "async")]
             KanalWaker::None | KanalWaker::Async(_) => unreachable!(),
@@ -142,7 +163,7 @@ impl<T> Signal<T> {
     /// Waits for the signal event in sync mode with a timeout
     pub(crate) fn wait_timeout(&self, until: Instant) -> bool {
         for _ in 0..32 {
-            let v = self.state.relaxed();
+            let v = self.state.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
@@ -152,14 +173,14 @@ impl<T> Signal<T> {
         }
         //return self.v.load(Ordering::Acquire);
         while Instant::now() < until {
-            let v = self.state.relaxed();
+            let v = self.state.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
             }
             backoff::yield_now_std();
         }
-        self.state.acquire() == UNLOCKED
+        self.state.load(Ordering::Acquire) == UNLOCKED
     }
 
     /// Set pointer to data for receiving or sending
@@ -169,7 +190,7 @@ impl<T> Signal<T> {
         self.ptr = ptr;
     }
 
-    /// Set pointer to data for receiving or sending
+    /// Registers the async waker in the Signal
     #[inline(always)]
     #[cfg(feature = "async")]
     pub(crate) fn register_waker(&mut self, waker: &Waker) {
@@ -188,7 +209,7 @@ impl<T> Signal<T> {
 
     /// Returns true if signal is terminated
     pub(crate) fn is_terminated(&self) -> bool {
-        self.state.relaxed() == TERMINATED
+        self.state.load(Ordering::Relaxed) == TERMINATED
     }
 
     /// Reads kanal ptr and returns its value
@@ -200,15 +221,20 @@ impl<T> Signal<T> {
     unsafe fn wake(this: *const Self, state: u8) {
         match &(*this).waker {
             KanalWaker::Sync(waker) => {
-                if !(*this).state.try_change(state) {
-                    (*this).state.force(state);
-                    waker.wake()
+                if (*this)
+                    .state
+                    .compare_exchange(LOCKED, state, Ordering::Release, Ordering::Acquire)
+                    .is_err()
+                {
+                    let thread = (&*waker.get()).as_ref().unwrap().clone();
+                    (*this).state.store(state, Ordering::Release);
+                    thread.unpark();
                 }
             }
             #[cfg(feature = "async")]
             KanalWaker::Async(w) => {
                 let w = w.clone();
-                (*this).state.force(state);
+                (*this).state.store(state, Ordering::Release);
                 w.wake();
             }
             #[cfg(feature = "async")]

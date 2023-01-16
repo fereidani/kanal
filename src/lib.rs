@@ -11,8 +11,6 @@ pub(crate) mod backoff;
 pub(crate) mod internal;
 pub(crate) mod mutex;
 pub(crate) mod pointer;
-pub(crate) mod state;
-pub(crate) mod sync;
 
 mod error;
 #[cfg(feature = "async")]
