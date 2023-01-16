@@ -53,8 +53,8 @@ fn random_u7() -> u8 {
     // SEED number is inited with Mathematiclly proven super unlucky number. (I'm kidding, don't file a bug report please)
     static SEED: AtomicU8 = AtomicU8::new(13);
     const MULTIPLIER: u8 = 113;
-    // Increment the seed atomically
-    let seed = SEED.fetch_add(1, Ordering::SeqCst);
+    // Increment the seed atomically, Relaxed ordering is enough as we need atomic operation only on the SEED itself.
+    let seed = SEED.fetch_add(1, Ordering::Relaxed);
     // Use a LCG like algorithm to generate a random number from the seed
     seed.wrapping_mul(MULTIPLIER) & 0x7F
 }
@@ -65,7 +65,7 @@ fn random_u7() -> u8 {
 fn random_u32() -> u32 {
     static SEED: AtomicU32 = AtomicU32::new(13);
     const MULTIPLIER: u32 = 1812433253;
-    let seed = SEED.fetch_add(1, Ordering::SeqCst);
+    let seed = SEED.fetch_add(1, Ordering::Relaxed);
     seed.wrapping_mul(MULTIPLIER)
 }
 
