@@ -74,18 +74,21 @@ impl<'a, T> Drop for SendFuture<'a, T> {
 
 impl<'a, T> SendFuture<'a, T> {
     /// # Safety
-    /// it's only safe to call this function once and only if send operation will finish after this call.
+    /// it's only safe to call this function once and only if send operation
+    /// will finish after this call.
     #[inline(always)]
     unsafe fn read_local_data(&self) -> T {
         if size_of::<T>() > size_of::<*mut T>() {
-            // if its smaller than register size, it does not need pointer setup as data will be stored in register address object
+            // if its smaller than register size, it does not need pointer setup as data
+            // will be stored in register address object
             std::ptr::read(self.data.as_ptr())
         } else {
             self.sig.assume_init()
         }
     }
     /// # Safety
-    /// it's only safe to call this function once and only if send operation fails
+    /// it's only safe to call this function once and only if send operation
+    /// fails
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
         if size_of::<T>() > size_of::<*mut T>() {
@@ -112,7 +115,8 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     this.state = FutureState::Done;
                     if needs_drop::<T>() {
                         // the data failed to move, drop it locally
-                        // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                        // Safety: the data is not moved, we are sure that it is inited in this
+                        // point, it's safe to init drop it.
                         unsafe {
                             this.drop_local_data();
                         }
@@ -136,7 +140,8 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     Poll::Ready(Ok(()))
                 } else {
                     this.state = FutureState::Waiting;
-                    // if T is smaller than register size, we already have data in pointer address from initialization step
+                    // if T is smaller than register size, we already have data in pointer address
+                    // from initialization step
                     if size_of::<T>() > size_of::<*mut T>() {
                         this.sig
                             .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
@@ -160,7 +165,8 @@ impl<'a, T> Future for SendFuture<'a, T> {
                         } else {
                             if needs_drop::<T>() {
                                 // the data failed to move, drop it locally
-                                // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                                // Safety: the data is not moved, we are sure that it is inited in
+                                // this point, it's safe to init drop it.
                                 unsafe { this.drop_local_data() };
                             }
                             Poll::Ready(Err(SendError::Closed))
@@ -172,20 +178,24 @@ impl<'a, T> Future for SendFuture<'a, T> {
                             {
                                 let internal = acquire_internal(this.internal);
                                 if internal.send_signal_exists(&this.sig) {
-                                    // signal is not shared with other thread yet so it's safe to update waker locally
+                                    // signal is not shared with other thread yet so it's safe to
+                                    // update waker locally
                                     this.sig.register_waker(cx.waker());
                                     return Poll::Pending;
                                 }
                             }
-                            // signal is already shared, and data will be available shortly, so wait synchronously and return the result
-                            // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
+                            // signal is already shared, and data will be available shortly, so wait
+                            // synchronously and return the result note:
+                            // it's not possible safely to update waker after the signal is shared,
+                            // but we know data will be ready shortly,
                             //   we can wait synchronously and receive it.
                             this.state = FutureState::Done;
                             if this.sig.async_blocking_wait() {
                                 return Poll::Ready(Ok(()));
                             }
                             // the data failed to move, drop it locally
-                            // Safety: the data is not moved, we are sure that it is inited in this point, it's safe to init drop it.
+                            // Safety: the data is not moved, we are sure that it is inited in this
+                            // point, it's safe to init drop it.
                             if needs_drop::<T>() {
                                 unsafe {
                                     this.drop_local_data();
@@ -245,7 +255,8 @@ impl<'a, T> ReceiveFuture<'a, T> {
     #[inline(always)]
     unsafe fn read_local_data(&self) -> T {
         if size_of::<T>() > size_of::<*mut T>() {
-            // if T is smaller than register size, it does not need pointer setup as data will be stored in register address object
+            // if T is smaller than register size, it does not need pointer setup as data
+            // will be stored in register address object
             std::ptr::read(self.data.as_ptr())
         } else {
             self.sig.assume_init()
@@ -306,7 +317,8 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         }
                         this.state = FutureState::Waiting;
                         if size_of::<T>() > size_of::<*mut T>() {
-                            // if type T smaller than register size, it does not need pointer setup as data will be stored in register address object
+                            // if type T smaller than register size, it does not need pointer setup
+                            // as data will be stored in register address object
                             this.sig
                                 .set_ptr(KanalPtr::new_unchecked(this.data.as_mut_ptr()));
                         }
@@ -332,17 +344,21 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         }
                         Poll::Pending => {
                             if !this.sig.will_wake(cx.waker()) {
-                                // the Waker is changed and we need to update waker in the waiting list
+                                // the Waker is changed and we need to update waker in the waiting
+                                // list
                                 {
                                     let internal = acquire_internal(this.internal);
                                     if internal.recv_signal_exists(&this.sig) {
-                                        // signal is not shared with other thread yet so it's safe to update waker locally
+                                        // signal is not shared with other thread yet so it's safe
+                                        // to update waker locally
                                         this.sig.register_waker(cx.waker());
                                         return Poll::Pending;
                                     }
                                 }
-                                // the signal is already shared, and data will be available shortly, so wait synchronously and return the result
-                                // note: it's not possible safely to update waker after the signal is shared, but we know data will be ready shortly,
+                                // the signal is already shared, and data will be available shortly,
+                                // so wait synchronously and return the result
+                                // note: it's not possible safely to update waker after the signal
+                                // is shared, but we know data will be ready shortly,
                                 //   we can wait synchronously and receive it.
                                 this.state = FutureState::Done;
                                 if this.sig.async_blocking_wait() {

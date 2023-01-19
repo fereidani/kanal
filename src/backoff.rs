@@ -1,6 +1,7 @@
 /// Separate module for backoff strategy.
-/// The reason of seperating backoff to independent module is that with this approach it is easier
-///  to test and compare different backoff solutions.
+/// The reason of seperating backoff to independent module is that with
+/// this approach it is easier  to test and compare different backoff
+/// solutions.
 use std::{
     sync::atomic::{AtomicU32, AtomicU8, Ordering},
     time::Duration,
@@ -40,26 +41,29 @@ pub fn spin_wait(count: usize) {
 #[allow(dead_code)]
 #[inline(always)]
 pub fn yield_now() {
-    // This number will be added to the calculate pseudo random to avoid short spins
+    // This number will be added to the calculate pseudo random to avoid short
+    // spins
     const OFFSET: usize = 1 << 6;
     spin_wait((random_u7() as usize).wrapping_add(OFFSET));
 }
 
-/// Generates a 7-bits pseudo random number using atomics with LCG like algorithm
-/// This generator is only suited for special use-case of yield_now, and not recommended for use anywhere else.
+/// Generates a 7-bits pseudo random number using atomics with LCG like
+/// algorithm This generator is only suited for special use-case of yield_now,
+/// and not recommended for use anywhere else.
 #[allow(dead_code)]
 #[inline(always)]
 fn random_u7() -> u8 {
-    // SEED number is inited with Mathematiclly proven super unlucky number. (I'm kidding, don't file a bug report please)
     static SEED: AtomicU8 = AtomicU8::new(13);
     const MULTIPLIER: u8 = 113;
-    // Increment the seed atomically, Relaxed ordering is enough as we need atomic operation only on the SEED itself.
+    // Increment the seed atomically, Relaxed ordering is enough as we need
+    // atomic operation only on the SEED itself.
     let seed = SEED.fetch_add(1, Ordering::Relaxed);
     // Use a LCG like algorithm to generate a random number from the seed
     seed.wrapping_mul(MULTIPLIER) & 0x7F
 }
 
-/// Generates a pseudo u32 random number using atomics with LCG like algorithm same as random_u8
+/// Generates a pseudo u32 random number using atomics with LCG like algorithm
+/// same as random_u8
 #[allow(dead_code)]
 #[inline(always)]
 fn random_u32() -> u32 {

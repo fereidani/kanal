@@ -1,10 +1,4 @@
-//! # Kanal: The fast synchronous and asynchronous channel that Rust deserves.
-//!
-//! Kanal is a Rust library to help programmers design effective programs in the CSP model by providing featureful multi-producer multi-consumer channels.
-//! This library focuses on bringing both sync and async API together to unify message passing between sync and async parts of Rust code in a performant manner.
-//! Performance is the main goal of Kanal.
-//!
-//!
+#![doc = include_str!("../README.md")]
 #![warn(missing_docs, missing_debug_implementations)]
 
 pub(crate) mod backoff;
@@ -21,8 +15,9 @@ mod signal;
 pub use error::*;
 #[cfg(feature = "async")]
 pub use future::*;
-use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
 pub use oneshot::*;
+
+use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
 use pointer::KanalPtr;
 use signal::*;
 use std::{
@@ -33,8 +28,10 @@ use std::{
 #[cfg(feature = "async")]
 use std::{marker::PhantomPinned, mem::transmute};
 
-/// Sending side of the channel in sync mode.
-/// Senders can be cloned and produce senders to operate in both sync and async modes.
+/// Sending side of the channel with sync API. It's possible to convert it to
+/// async [`AsyncSender`] with `as_async`, `to_async` or `clone_async` based on
+/// software requirement.
+///
 /// # Examples
 ///
 /// ```ignore
@@ -46,8 +43,10 @@ pub struct Sender<T> {
     internal: Internal<T>,
 }
 
-/// Sending side of the channel in async mode.
-/// Senders can be cloned and produce senders to operate in both sync and async modes.
+/// Sending side of the channel with async API.  It's possible to convert it to
+/// sync [`Sender`] with `as_sync`, `to_sync` or `clone_sync` based on software
+/// requirement.
+///
 /// # Examples
 ///
 /// ```
@@ -124,7 +123,8 @@ impl<T> fmt::Debug for AsyncSender<T> {
 
 macro_rules! shared_impl {
     () => {
-        /// Returns whether the channel is bounded or not
+        /// Returns whether the channel is bounded or not.
+        ///
         /// # Examples
         ///
         /// ```
@@ -140,7 +140,8 @@ macro_rules! shared_impl {
         pub fn is_bounded(&self) -> bool {
             acquire_internal(&self.internal).capacity != usize::MAX
         }
-        /// Returns length of the queue
+        /// Returns length of the queue.
+        ///
         /// # Examples
         ///
         /// ```
@@ -154,7 +155,8 @@ macro_rules! shared_impl {
         pub fn len(&self) -> usize {
             acquire_internal(&self.internal).queue.len()
         }
-        /// Returns whether the channel queue is empty or not
+        /// Returns whether the channel queue is empty or not.
+        ///
         /// # Examples
         ///
         /// ```
@@ -167,7 +169,8 @@ macro_rules! shared_impl {
         }
         /// Returns whether the channel queue is full or not
         /// full channels will block on send and recv calls
-        /// it always returns true for zero sized channels
+        /// it always returns true for zero sized channels.
+        ///
         /// # Examples
         ///
         /// ```
@@ -181,7 +184,8 @@ macro_rules! shared_impl {
             internal.capacity == internal.queue.len()
         }
         /// Returns capacity of channel (not the queue)
-        /// for unbounded channels, it will return usize::MAX
+        /// for unbounded channels, it will return usize::MAX.
+        ///
         /// # Examples
         ///
         /// ```
@@ -197,7 +201,8 @@ macro_rules! shared_impl {
         pub fn capacity(&self) -> usize {
             acquire_internal(&self.internal).capacity
         }
-        /// Returns count of alive receiver instances of the channel
+        /// Returns count of alive receiver instances of the channel.
+        ///
         /// # Examples
         ///
         /// ```
@@ -208,7 +213,8 @@ macro_rules! shared_impl {
         pub fn receiver_count(&self) -> u32 {
             acquire_internal(&self.internal).recv_count
         }
-        /// Returns count of alive sender instances of the channel
+        /// Returns count of alive sender instances of the channel.
+        ///
         /// # Examples
         ///
         /// ```
@@ -219,7 +225,9 @@ macro_rules! shared_impl {
         pub fn sender_count(&self) -> u32 {
             acquire_internal(&self.internal).send_count
         }
-        /// Closes the channel completely on both sides and terminates waiting signals
+        /// Closes the channel completely on both sides and terminates waiting
+        /// signals.
+        ///
         /// # Examples
         ///
         /// ```
@@ -240,7 +248,9 @@ macro_rules! shared_impl {
             internal.queue.clear();
             true
         }
-        /// Returns whether the channel is closed on both side of send and receive or not
+        /// Returns whether the channel is closed on both side of send and
+        /// receive or not.
+        ///
         /// # Examples
         ///
         /// ```
@@ -259,9 +269,13 @@ macro_rules! shared_impl {
 
 macro_rules! shared_send_impl {
     () => {
-        /// Tries sending to the channel without waiting on the waitlist, if send fails then the object will be dropped.
-        /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
-        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.
+        /// Tries sending to the channel without waiting on the waitlist, if
+        /// send fails then the object will be dropped. It returns `Ok(true)` in
+        /// case of a successful operation and `Ok(false)` for a failed one, or
+        /// error in case that channel is closed. Important note: this function
+        /// is not lock-free as it acquires a mutex guard of the channel
+        /// internal for a short time.
+        ///
         /// # Examples
         ///
         /// ```
@@ -302,9 +316,13 @@ macro_rules! shared_send_impl {
             Ok(false)
         }
 
-        /// Tries sending to the channel without waiting on the waitlist, if send fails then the object will be dropped.
-        /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
-        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.
+        /// Tries sending to the channel without waiting on the waitlist, if
+        /// send fails then the object will be dropped. It returns `Ok(true)` in
+        /// case of a successful operation and `Ok(false)` for a failed one, or
+        /// error in case that channel is closed. Important note: this function
+        /// is not lock-free as it acquires a mutex guard of the channel
+        /// internal for a short time.
+        ///
         /// # Examples
         ///
         /// ```
@@ -349,9 +367,13 @@ macro_rules! shared_send_impl {
             Ok(false)
         }
 
-        /// Tries sending to the channel without waiting on the waitlist or for the internal mutex, if send fails then the object will be dropped.
-        /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
-        /// Do not use this function unless you know exactly what you are doing.
+        /// Tries sending to the channel without waiting on the waitlist or for
+        /// the internal mutex, if send fails then the object will be dropped.
+        /// It returns `Ok(true)` in case of a successful operation and
+        /// `Ok(false)` for a failed one, or error in case that channel is
+        /// closed. Do not use this function unless you know exactly what you
+        /// are doing.
+        ///
         /// # Examples
         ///
         /// ```
@@ -393,10 +415,13 @@ macro_rules! shared_send_impl {
             Ok(false)
         }
 
-        /// Tries sending to the channel without waiting on the waitlist or channel internal lock.
-        /// It returns `Ok(true)` in case of a successful operation and `Ok(false)` for a failed one, or error in case that channel is closed.
-        /// This function will `panic` on successfull send attempt of `None` data.
-        /// Do not use this function unless you know exactly what you are doing.
+        /// Tries sending to the channel without waiting on the waitlist or
+        /// channel internal lock. It returns `Ok(true)` in case of a successful
+        /// operation and `Ok(false)` for a failed one, or error in case that
+        /// channel is closed. This function will `panic` on successfull send
+        /// attempt of `None` data. Do not use this function unless you know
+        /// exactly what you are doing.
+        ///
         /// # Examples
         ///
         /// ```
@@ -442,7 +467,8 @@ macro_rules! shared_send_impl {
             Ok(false)
         }
 
-        /// Returns whether the receive side of the channel is closed or not
+        /// Returns whether the receive side of the channel is closed or not.
+        ///
         /// # Examples
         ///
         /// ```
@@ -460,8 +486,11 @@ macro_rules! shared_send_impl {
 macro_rules! shared_recv_impl {
     () => {
         /// Tries receiving from the channel without waiting on the waitlist.
-        /// It returns `Ok(Some(T))` in case of successful operation and `Ok(None)` for a failed one, or error in case that channel is closed.
-        /// Important note: this function is not lock-free as it acquires a mutex guard of the channel internal for a short time.
+        /// It returns `Ok(Some(T))` in case of successful operation and
+        /// `Ok(None)` for a failed one, or error in case that channel is
+        /// closed. Important note: this function is not lock-free as it
+        /// acquires a mutex guard of the channel internal for a short time.
+        ///
         /// # Examples
         ///
         /// ```
@@ -488,8 +517,9 @@ macro_rules! shared_recv_impl {
             }
             if let Some(v) = internal.queue.pop_front() {
                 if let Some(p) = internal.next_send() {
-                    // if there is a sender take its data and push it into the queue
-                    // Safety: it's safe to receive from owned signal once
+                    // if there is a sender take its data and push it into the
+                    // queue Safety: it's safe to receive from owned
+                    // signal once
                     unsafe { internal.queue.push_back(p.recv()) }
                 }
                 return Ok(Some(v));
@@ -504,9 +534,12 @@ macro_rules! shared_recv_impl {
             Ok(None)
             // if the queue is not empty send the data
         }
-        /// Tries receiving from the channel without waiting on the waitlist or waiting for channel internal lock.
-        /// It returns `Ok(Some(T))` in case of successful operation and `Ok(None)` for a failed one, or error in case that channel is closed.
-        /// Do not use this function unless you know exactly what you are doing.
+        /// Tries receiving from the channel without waiting on the waitlist or
+        /// waiting for channel internal lock. It returns `Ok(Some(T))` in case
+        /// of successful operation and `Ok(None)` for a failed one, or error in
+        /// case that channel is closed. Do not use this function unless you
+        /// know exactly what you are doing.
+        ///
         /// # Examples
         ///
         /// ```
@@ -533,8 +566,9 @@ macro_rules! shared_recv_impl {
                 }
                 if let Some(v) = internal.queue.pop_front() {
                     if let Some(p) = internal.next_send() {
-                        // if there is a sender take its data and push it into the queue
-                        // Safety: it's safe to receive from owned signal once
+                        // if there is a sender take its data and push it into
+                        // the queue Safety: it's safe to
+                        // receive from owned signal once
                         unsafe { internal.queue.push_back(p.recv()) }
                     }
                     return Ok(Some(v));
@@ -550,7 +584,8 @@ macro_rules! shared_recv_impl {
             Ok(None)
         }
 
-        /// Returns, whether the send side of the channel, is closed or not
+        /// Returns, whether the send side of the channel, is closed or not.
+        ///
         /// # Examples
         ///
         /// ```
@@ -562,7 +597,9 @@ macro_rules! shared_recv_impl {
             acquire_internal(&self.internal).send_count == 0
         }
 
-        /// Returns, whether the channel receive side is terminated, and will not return any result in future recv calls.
+        /// Returns, whether the channel receive side is terminated, and will
+        /// not return any result in future recv calls.
+        ///
         /// # Examples
         ///
         /// ```
@@ -584,7 +621,8 @@ macro_rules! shared_recv_impl {
 }
 
 impl<T> Sender<T> {
-    /// Sends data to the channel
+    /// Sends data to the channel.
+    ///
     /// # Examples
     ///
     /// ```
@@ -626,7 +664,8 @@ impl<T> Sender<T> {
             internal.push_send(sig.get_terminator());
             drop(internal);
             if !sig.wait() {
-                // Safety: data failed to move, sender should drop it if it needs to
+                // Safety: data failed to move, sender should drop it if it
+                // needs to
                 if needs_drop::<T>() {
                     unsafe { data.assume_init_drop() }
                 }
@@ -636,8 +675,10 @@ impl<T> Sender<T> {
         }
         // if the queue is not empty send the data
     }
-    /// Sends data to the channel with a deadline, if send fails then the object will be dropped.
-    /// you can use send_option_timeout if you like to keep the object in case of timeout.
+    /// Sends data to the channel with a deadline, if send fails then the object
+    /// will be dropped. you can use send_option_timeout if you like to keep
+    /// the object in case of timeout.
+    ///
     /// # Examples
     ///
     /// ```
@@ -671,7 +712,8 @@ impl<T> Sender<T> {
             unsafe { first.send(data) }
             Ok(())
         } else if internal.queue.len() < internal.capacity {
-            // Safety: MaybeUninit is used as a ManuallyDrop, and data in it is valid.
+            // Safety: MaybeUninit is used as a ManuallyDrop, and data in it is
+            // valid.
             internal.queue.push_back(data);
             Ok(())
         } else {
@@ -682,7 +724,8 @@ impl<T> Sender<T> {
             drop(internal);
             if !sig.wait_timeout(deadline) {
                 if sig.is_terminated() {
-                    // Safety: data failed to move, sender should drop it if it needs to
+                    // Safety: data failed to move, sender should drop it if it
+                    // needs to
                     if needs_drop::<T>() {
                         unsafe { data.assume_init_drop() }
                     }
@@ -696,7 +739,8 @@ impl<T> Sender<T> {
                 }
                 // removing receive failed to wait for the signal response
                 if !sig.wait() {
-                    // Safety: data failed to move, sender should drop it if it needs to
+                    // Safety: data failed to move, sender should drop it if it
+                    // needs to
                     if needs_drop::<T>() {
                         unsafe { data.assume_init_drop() }
                     }
@@ -708,7 +752,9 @@ impl<T> Sender<T> {
         // if the queue is not empty send the data
     }
 
-    /// Tries to send data from provided option with a deadline, it will panic on successful send for None option.
+    /// Tries to send data from provided option with a deadline, it will panic
+    /// on successful send for None option.
+    ///
     /// # Examples
     ///
     /// ```
@@ -781,7 +827,7 @@ impl<T> Sender<T> {
         // if the queue is not empty send the data
     }
     shared_send_impl!();
-    /// Clones Sender as the async version of it and returns it
+    /// Clones [`Sender`] as the async version of it and returns it
     #[cfg(feature = "async")]
     pub fn clone_async(&self) -> AsyncSender<T> {
         let mut internal = acquire_internal(&self.internal);
@@ -793,7 +839,7 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Converts Sender to AsyncSender and returns it
+    /// Converts [`Sender`] to [`AsyncSender`] and returns it
     /// # Examples
     ///
     /// ```
@@ -816,7 +862,7 @@ impl<T> Sender<T> {
         unsafe { transmute(self) }
     }
 
-    /// Borrows Sender as AsyncSender and returns it
+    /// Borrows [`Sender`] as [`AsyncSender`] and returns it
     /// # Examples
     ///
     /// ```
@@ -842,7 +888,8 @@ impl<T> Sender<T> {
 
 #[cfg(feature = "async")]
 impl<T> AsyncSender<T> {
-    /// Sends data asynchronously to the channel
+    /// Sends data asynchronously to the channel.
+    ///
     /// # Examples
     ///
     /// ```
@@ -874,7 +921,8 @@ impl<T> AsyncSender<T> {
         }
     }
     shared_send_impl!();
-    /// Clones async sender as sync version of it
+    /// Clones [`AsyncSender`] as [`Sender`] with sync api of it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -897,7 +945,8 @@ impl<T> AsyncSender<T> {
         }
     }
 
-    /// Converts AsyncSender to Sender and returns it
+    /// Converts [`AsyncSender`] to [`Sender`] and returns it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -920,7 +969,8 @@ impl<T> AsyncSender<T> {
         unsafe { transmute(self) }
     }
 
-    /// Borrows AsyncSender as Sender and returns it
+    /// Borrows [`AsyncSender`] as [`Sender`] and returns it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -946,7 +996,11 @@ impl<T> AsyncSender<T> {
 }
 
 /// Receiving side of the channel in sync mode.
-/// Receivers can be cloned and produce receivers to operate in both sync and async modes.
+/// Receivers can be cloned and produce receivers to operate in both sync and
+/// async modes.
+///
+/// # Examples
+///
 /// ```ignore
 /// # // ignored because it correctly fails with --no-default-features
 /// let (_s, receiver) = kanal::bounded::<u64>(0);
@@ -962,8 +1016,12 @@ impl<T> fmt::Debug for Receiver<T> {
     }
 }
 
-/// Receiving side of the channel in async mode.
-/// Receivers can be cloned and produce receivers to operate in both sync and async modes.
+/// [`AsyncReceiver`] is receiving side of the channel in async mode.
+/// Receivers can be cloned and produce receivers to operate in both sync and
+/// async modes.
+///
+/// # Examples
+///
 /// ```
 /// let (_s, receiver) = kanal::bounded_async::<u64>(0);
 /// let sync_receiver=receiver.clone_sync();
@@ -1013,7 +1071,8 @@ impl<T> Receiver<T> {
                 return Err(ReceiveError::Closed);
             }
 
-            // Safety: it's safe to assume init as data is forgotten on another side
+            // Safety: it's safe to assume init as data is forgotten on another
+            // side
             if size_of::<T>() > size_of::<*mut T>() {
                 Ok(unsafe { ret.assume_init() })
             } else {
@@ -1068,7 +1127,8 @@ impl<T> Receiver<T> {
                     return Err(ReceiveErrorTimeout::Closed);
                 }
             }
-            // Safety: it's safe to assume init as data is forgotten on another side
+            // Safety: it's safe to assume init as data is forgotten on another
+            // side
             if size_of::<T>() > size_of::<*mut T>() {
                 Ok(unsafe { ret.assume_init() })
             } else {
@@ -1090,7 +1150,8 @@ impl<T> Receiver<T> {
         }
     }
 
-    /// Converts Receiver to AsyncReceiver and returns it
+    /// Converts [`Receiver`] to [`AsyncReceiver`] and returns it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1114,7 +1175,8 @@ impl<T> Receiver<T> {
         unsafe { transmute(self) }
     }
 
-    /// Borrows Receiver as AsyncReceiver and returns it
+    /// Borrows [`Receiver`] as [`AsyncReceiver`] and returns it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1153,7 +1215,9 @@ impl<T> Iterator for Receiver<T> {
 
 #[cfg(feature = "async")]
 impl<T> AsyncReceiver<T> {
-    /// Returns a future to receive data from the channel asynchronously
+    /// Returns a [`ReceiveFuture`] to receive data from the channel
+    /// asynchronously.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1174,9 +1238,11 @@ impl<T> AsyncReceiver<T> {
         ReceiveFuture::new_ref(&self.internal)
     }
     /// Creates a asynchronous stream for the channel to receive messages,
-    ///  `ReceiveStream` borrows the receiver, after dropping it, receiver will be available and usable again.
+    /// [`ReceiveStream`] borrows the [`AsyncReceiver`], after dropping it,
+    /// receiver will be available and usable again.
     ///
     /// # Examples
+    ///
     /// ```
     /// # use tokio::{spawn as co};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -1206,7 +1272,8 @@ impl<T> AsyncReceiver<T> {
         ReceiveStream::new_borrowed(self)
     }
     shared_recv_impl!();
-    /// Returns sync cloned version of the receiver
+    /// Returns sync cloned version of the receiver.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1230,7 +1297,8 @@ impl<T> AsyncReceiver<T> {
         }
     }
 
-    /// Converts AsyncReceiver to Receiver and returns it
+    /// Converts [`AsyncReceiver`] to [`Receiver`] and returns it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1253,7 +1321,7 @@ impl<T> AsyncReceiver<T> {
         unsafe { transmute(self) }
     }
 
-    /// Borrows AsyncReceiver as Receiver and returns it
+    /// Borrows [`AsyncReceiver`] as [`Receiver`] and returns it
     /// # Examples
     ///
     /// ```
@@ -1328,8 +1396,12 @@ impl<T> Clone for AsyncReceiver<T> {
     }
 }
 
-/// Returns bounded, sync sender and receiver of the channel for type T
-/// senders and receivers can produce both async and sync versions via clone, clone_sync, and clone_async
+/// Creates a new sync bounded channel with the requested buffer size, and
+/// returns [`Sender`] and [`Receiver`] of the channel for type T, you can get
+/// access to async API of [`AsyncSender`] and [`AsyncReceiver`] with `to_sync`,
+/// `as_async` or `clone_sync` based on your requirements, by calling them on
+/// sender or receiver.
+///
 /// # Examples
 ///
 /// ```
@@ -1363,8 +1435,12 @@ pub fn bounded<T>(size: usize) -> (Sender<T>, Receiver<T>) {
     )
 }
 
-/// Returns bounded, async sender and receiver of the channel for type T
-/// senders and receivers can produce both async and sync versions via clone, clone_sync, and clone_async
+/// Creates a new async bounded channel with the requested buffer size, and
+/// returns [`AsyncSender`] and [`AsyncReceiver`] of the channel for type T, you
+/// can get access to sync API of [`Sender`] and [`Receiver`] with `to_sync`,
+/// `as_async` or `clone_sync` based on your requirements, by calling them on
+/// async sender or receiver.
+///
 /// # Examples
 ///
 /// ```
@@ -1395,8 +1471,12 @@ pub fn bounded_async<T>(size: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
 
 const UNBOUNDED_STARTING_SIZE: usize = 2048;
 
-/// Returns unbounded, sync sender and receiver of the channel for type T
-/// senders and receivers can produce both async and sync versions via clone, clone_sync, and clone_async
+/// Creates a new sync unbounded channel, and returns [`Sender`] and
+/// [`Receiver`] of the channel for type T, you can get access to async API
+/// of [`AsyncSender`] and [`AsyncReceiver`] with `to_sync`, `as_async` or
+/// `clone_sync` based on your requirements, by calling them on sender or
+/// receiver.
+///
 /// # Examples
 ///
 /// ```
@@ -1430,8 +1510,11 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
     )
 }
 
-/// Returns unbounded, async sender and receiver of the channel for type T
-/// senders and receivers can produce both async and sync versions via clone, clone_sync, and clone_async
+/// Creates a new async unbounded channel, and returns [`AsyncSender`] and
+/// [`AsyncReceiver`] of the channel for type T, you can get access to sync API
+/// of [`Sender`] and [`Receiver`] with `to_sync`, `as_async` or `clone_sync`
+/// based on your requirements, by calling them on async sender or receiver.
+///
 /// # Examples
 ///
 /// ```

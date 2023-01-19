@@ -1,3 +1,53 @@
+/// Kanal one-shot implementation is a lock-free algorithm with only a usize
+/// allocation in heap. Algorithm serializes states of the oneshot channel based
+/// on pointer address in the heap, and also manages memory free operation with
+/// same states, without a need to Arc.
+///
+/// There is a main difference between Kanal implementation of oneshot and other
+/// existing implementations. Kanal synchronizes on both send and recv, while in
+/// other implementations send could not be blocking/suspending, in Kanal
+/// if sender reaches `send` function before receiver calls its `recv`, send
+/// will block/suspend until transaction is done. In async API send will not
+/// send data unless code awaits the returning future.
+///
+/// Channel states are simple,
+/// WAITING = null pointer
+/// FINISHED = full 1 bits pattern of the pointer
+/// ANY OTHER ADDRESS = ptr to winner signal address
+///
+/// Both side of sender and receiver can know which is the winner by a simple
+/// fact. If winner is not a pointer to their signal, they are the one that
+/// should comply with other signal. In the other word it's like that other
+/// state of channel that is which side is the winner is encoded in the
+/// instruction pointer. In certain blocks WAITING means loser and in others
+/// means winner.
+///
+/// Both side in start are racing to win the pointer, if one loses, they can
+/// find the correct state of channel based on ptr address. If it is a pointer
+/// to a memory location that is not FINISHED, other thread/coroutine is
+/// suspended on its signal and loser should finish the signal. If it is a
+/// pointer with value of FINISHED, channel is dropped from other side, and
+/// operation is failed.
+///
+/// When loser side wants to finish the waiting signal, it should change the
+/// pointer address of waiting signal to finished before finishing the
+/// transaction. The reason is to avoid any mid transfer cancelation by owner of
+/// signal, after change of waiting signal to finished state, under no
+/// circumtances transaction cannot be canceled. Unless the owner changes its
+/// own signal to FINISHED first, and cancel the transaction by itself.
+/// In simple terms, won signal can change to FINISHED state by loser or winner,
+/// if loser changes it, it means transaction is finishing and winner should
+/// commit to finishing the transaction, and if loser changes it, it implies
+/// that loser is canceling the operation completely.
+///
+/// Memory management is simple, there is no finishing state that ptr does
+/// not change to FINISHED, and first one to reach that state is going to leave
+/// the pointer for latest owner of channel either sender or receiver to free
+/// the heep allocation.
+///
+/// Write, read and termination are done through the same [`Signal`] that is
+/// backbone of Kanal MPMC channels. for more information check `signal.rs`.
+
 #[cfg(feature = "async")]
 use crate::FutureState;
 use crate::{pointer::KanalPtr, signal::*, OneshotReceiveError};
@@ -19,10 +69,19 @@ use std::{
 const WAITING: *mut () = std::ptr::null_mut::<()>();
 const FINISHED: *mut () = !0usize as *mut ();
 
+/// [`ActionResult`] translates state of compare_exchange off the AtomicPtr to
+/// more readable and easier to handle enum.
 enum ActionResult<T> {
+    /// Action was successfull
     Ok,
+    /// State is racing, side can participate in race to win signal ptr
     Racing,
+    /// The side that receiving this value is the loser, and address of winner
+    /// is returned.
     Winner(*const Signal<T>),
+    /// Channel is finished, either dropped or in finishing stages, actual state
+    /// of channel should be check in the winner signal. If there is no
+    /// winner, other side of channel is dropped.
     Finish,
 }
 
@@ -80,9 +139,10 @@ impl<T> OneshotInternalPointer<T> {
 unsafe impl<T> Send for OneshotInternalPointer<T> {}
 
 impl<T> OneshotInternal<T> {
-    // Tries to inform other side that signal is ready. If it's done successfully it
-    // means that performer will wait for otherside to awake its signal about
-    // task finishing state which is either finished or terminated.
+    /// Tries to inform other side that signal is ready. If it's done
+    /// successfully it means that performer will wait for otherside to
+    /// awake its signal about task finishing state which is either finished
+    /// or terminated.
     #[inline(always)]
     fn try_win_race(&self, own_ptr: *const Signal<T>) -> ActionResult<T> {
         self.ptr
@@ -94,9 +154,9 @@ impl<T> OneshotInternal<T> {
             )
             .into()
     }
-    // Tries to cancel the operation for both sides,
-    // It will update the state from racing with no winner to finishing,
-    // Which will be interpreted as termination of channel for other side.
+    /// Tries to cancel the operation for both sides,
+    /// It will update the state from racing with no winner to finishing,
+    /// Which will be interpreted as termination of channel for other side.
     #[inline(always)]
     fn try_terminate(&self) -> ActionResult<T> {
         self.ptr
@@ -108,12 +168,12 @@ impl<T> OneshotInternal<T> {
             )
             .into()
     }
-    // It's only used when the owner of signal in async context wants to update
-    // its waker  as signal is shared in that context, it's not safe to
-    // write to the signal as there will be multiple  mutable reference to
-    // signal, with this method channel resets state to racing if it's
-    // possible and tries to win the race again after updating the signal,
-    // the logic is something similiar to the Mutex.
+    /// It's only used when the owner of signal in async context wants to update
+    /// its waker  as signal is shared in that context, it's not safe to
+    /// write to the signal as there will be multiple  mutable reference to
+    /// signal, with this method channel resets state to racing if it's
+    /// possible and tries to win the race again after updating the signal,
+    /// the logic is something similiar to the Mutex.
     #[inline(always)]
     #[cfg(feature = "async")]
     fn try_reset(&self, own_ptr: *const Signal<T>) -> ActionResult<T> {
@@ -126,9 +186,9 @@ impl<T> OneshotInternal<T> {
             )
             .into()
     }
-    // Tries to upgrade state from waiting to finish,
-    // If winer use it, it's a signal for termination of signal,
-    // If loser use it, it's a signal for trying to start the data movement.
+    /// Tries to upgrade state from waiting to finish,
+    /// If winer use it, it's a signal for termination of signal,
+    /// If loser use it, it's a signal for trying to start the data movement.
     #[inline(always)]
     fn try_finish(&self, from: *const Signal<T>) -> ActionResult<T> {
         self.ptr
@@ -211,8 +271,14 @@ fn try_drop_recv_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
         }
     }
 }
-/// `OneshotReceiver<T>` is the sender side of oneshot channel that can send a
-/// single message.
+/// [`OneshotSender<T>`] is the sender side of oneshot channel that can send a
+/// single message. It can be converted to async [`OneshotAsyncSender<T>`] by
+/// calling [`Self::to_async`]. Sending a message is achievable with
+/// [`Self::send`].
+///
+/// Note: sending a message in Kanal one-shot algorithm can be
+/// blocking/suspending if the sender reaches the `send` function before
+/// receiver calling the recv.
 pub struct OneshotSender<T> {
     internal_ptr: OneshotInternalPointer<T>,
 }
@@ -224,7 +290,6 @@ impl<T> Debug for OneshotSender<T> {
 }
 
 impl<T> Drop for OneshotSender<T> {
-    #[inline(always)]
     fn drop(&mut self) {
         try_drop_send_internal(self.internal_ptr);
     }
@@ -235,8 +300,8 @@ impl<T> OneshotSender<T> {
     /// Unlike other rust's one-shot channel implementations this function could
     /// be blocking/suspending only if the sender reaches the function
     /// before receiver calling its recv function. In case of successful
-    /// operation this function returns Ok(()) and in case of failure it returns
-    /// back the sending object as Err(T).
+    /// operation this function returns `Ok(())` and in case of failure it
+    /// returns back the sending object as `Err(T)`.
     #[inline(always)]
     pub fn send(self, data: T) -> Result<(), T> {
         let mut data = MaybeUninit::new(data);
@@ -322,8 +387,11 @@ impl<T> OneshotSender<T> {
         unsafe { transmute(self) }
     }
 }
-/// `OneshotAsyncSender<T>` is the async sender side of the oneshot channel to
-/// send a single message in async context
+/// [`OneshotAsyncSender<T>`] is the sender side of oneshot channel that can
+/// send a single message asynchronously. It can be converted to
+/// [`OneshotSender<T>`] by calling [`Self::to_sync`]. Sending a message is
+/// achievable with [`Self::send`] which returns a future that should be polled
+/// until transfer is done.
 #[cfg(feature = "async")]
 pub struct OneshotAsyncSender<T> {
     internal_ptr: OneshotInternalPointer<T>,
@@ -341,8 +409,10 @@ impl<T> Drop for OneshotAsyncSender<T> {
     }
 }
 
-/// `OneshotReceiver<T>` is the receiver side of oneshot channel that can
-/// receive a single message
+/// [`OneshotReceiver<T>`] is the receiver side of oneshot channel that can
+/// receive a single message. It can be converted to async
+/// [`OneshotAsyncReceiver<T>`] by calling [`Self::to_async`]. Receiving a
+/// message is achievable with [`Self::recv`].
 pub struct OneshotReceiver<T> {
     internal_ptr: OneshotInternalPointer<T>,
 }
@@ -360,7 +430,7 @@ impl<T> Drop for OneshotReceiver<T> {
 }
 
 impl<T> OneshotReceiver<T> {
-    /// Receives a message from the channel and consumes the receive side
+    /// Receives a message from the channel and consumes the receive side.
     #[inline(always)]
     pub fn recv(self) -> Result<T, OneshotReceiveError> {
         // Safety: other side can't drop internal, if this side is not in
@@ -444,8 +514,11 @@ impl<T> OneshotReceiver<T> {
     }
 }
 
-/// `OneshotAsyncReceiver<T>` is the async receiver side of the oneshot channel
-/// to receive a single message in async context
+/// [`OneshotAsyncReceiver<T>`] is the receiver side of oneshot channel that can
+/// receive a single message asynchronously. It can be converted to
+/// [`OneshotReceiver<T>`] by calling [`Self::to_sync`]. Receiving a message is
+/// achievable with [`Self::recv`] which returns a future that should be polled
+/// to receive the message.
 #[cfg(feature = "async")]
 pub struct OneshotAsyncReceiver<T> {
     internal_ptr: OneshotInternalPointer<T>,
@@ -465,8 +538,14 @@ impl<T> Drop for OneshotAsyncReceiver<T> {
 
 #[cfg(feature = "async")]
 impl<T> OneshotAsyncSender<T> {
-    /// Returns a send future for sending `data` to the channel and consumes the
-    /// send side
+    /// Returns a future to send a message to the channel and consumes the send
+    /// side. Returning future should be polled until completion to finish
+    /// the send action. Unlike other rust's one-shot channel
+    /// implementations this function could be blocking/suspending only if
+    /// the sender reaches the function before receiver calling its recv
+    /// function. In case of successful operation this function returns
+    /// `Poll::ready(Ok(()))` and in case of failure it returns back the
+    /// sending object as `Poll::ready(Err(T))`.
     pub fn send(self, data: T) -> OneshotSendFuture<T> {
         let internal_ptr = self.internal_ptr;
         // No need to worry about droping the internal pointer in self, future
@@ -497,7 +576,7 @@ impl<T> OneshotAsyncSender<T> {
 #[cfg(feature = "async")]
 impl<T> OneshotAsyncReceiver<T> {
     /// Returns a receive future for receiving data from the channel and
-    /// consumes the receive side
+    /// consumes the receive side.
     pub fn recv(self) -> OneshotReceiveFuture<T> {
         let internal_ptr = self.internal_ptr;
         // No need to worry about droping the internal pointer in self, future
@@ -518,7 +597,38 @@ impl<T> OneshotAsyncReceiver<T> {
     }
 }
 
-/// Creates new oneshot channel and returns the sender and the receiver for it.
+/// Creates new oneshot channel and returns the [`OneshotSender<T>`] and
+/// [`OneshotReceiver<T>`] for it.
+///
+/// # Examples
+///
+/// ```
+/// # use std::thread::spawn;
+///  let (s, r) = kanal::oneshot();
+///  spawn(move || {
+///        s.send("Hello").unwrap();
+///       anyhow::Ok(())
+///  });
+///  let name=r.recv()?;
+///  println!("Hello {}!",name);
+/// # anyhow::Ok(())
+/// ```
+///
+/// ```
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// # use tokio::{spawn as co};
+/// # use std::time::Duration;
+///   let (s, r) = kanal::oneshot();
+///   // launch a coroutine for tokio
+///   co(async move {
+///     // convert to async api and send message asynchronously
+///     s.to_async().send("World").await.unwrap();
+///   });
+///   let name=r.recv()?;
+///   println!("Hello {}!",name);
+/// # anyhow::Ok(())
+/// # });
+/// ```
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
         ptr: (WAITING as *mut Signal<T>).into(),
@@ -539,8 +649,38 @@ pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     )
 }
 
-/// Creates new oneshot channel and returns the async sender and the async
-/// receiver for it.
+/// Creates new oneshot channel and returns the async [`OneshotAsyncSender<T>`]
+/// and [`OneshotAsyncReceiver<T>`] for it.
+///
+/// # Examples
+///
+/// ```
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// # use tokio::{spawn as co};
+/// # use std::time::Duration;
+///   let (s, r) = kanal::oneshot_async();
+///   co(async move {
+///     s.send("World").await.unwrap();
+///   });
+///   let name=r.recv().await?;
+///   println!("Hello {}!",name);
+/// # anyhow::Ok(())
+/// # });
+/// ```
+///
+/// ```
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// # use std::time::Duration;
+///   let (s, r) = kanal::oneshot_async();
+///   std::thread::spawn(move || {
+///     // Convert to sync api and send with sync api.
+///     s.to_sync().send("World").unwrap();
+///   });
+///   let name=r.recv().await?;
+///   println!("Hello {}!",name);
+/// # anyhow::Ok(())
+/// # });
+/// ```
 #[cfg(feature = "async")]
 pub fn oneshot_async<T>() -> (OneshotAsyncSender<T>, OneshotAsyncReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
@@ -563,7 +703,8 @@ pub fn oneshot_async<T>() -> (OneshotAsyncSender<T>, OneshotAsyncReceiver<T>) {
 }
 
 /// Oneshot channel send future that asynchronously sends data to the oneshot
-/// receiver
+/// receiver. returns `Ok(())` and in case of failure it returns back the
+/// sending object as `Err(T)`.
 #[must_use = "futures do nothing unless you .await or poll them"]
 #[cfg(feature = "async")]
 pub struct OneshotSendFuture<T> {
@@ -584,8 +725,9 @@ impl<T> Drop for OneshotSendFuture<T> {
             FutureState::Waiting => {
                 // If local state is waiting, this side won the signal pointer,
                 // loser will never go to waiting state under no
-                // condition. Safety: other side can't drop
-                // internal, if this side is not in finishing stage
+                // condition.
+                // Safety: other side can't drop internal, if this side is not in finishing
+                // stage
                 let internal = unsafe { self.internal_ptr.as_ref() };
                 match internal.try_finish(&self.sig) {
                     ActionResult::Ok => {
@@ -769,6 +911,7 @@ impl<T> Future for OneshotSendFuture<T> {
                                 // state to racing, update waker, then trying to win the signal
                                 // pointer again
                                 if internal.try_reset(&this.sig).is_ok() {
+                                    println!("update oneshot waker");
                                     // Signal pointer is released, participate in the race again
                                     this.state = FutureState::Zero;
                                     continue;

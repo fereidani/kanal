@@ -2,7 +2,9 @@ mod utils;
 use std::time::Duration;
 use utils::*;
 
-// this test module uses the Box<usize> only to check for memory issues related to the drop impl with MIRI, it's inefficient to use a channel like this in production code.
+// this test module uses the Box<usize> only to check for memory issues related
+// to the drop impl with Miri, it's inefficient to use channels like this in
+// production code.
 
 fn delay() {
     std::thread::sleep(Duration::from_millis(10));

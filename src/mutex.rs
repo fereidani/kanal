@@ -48,7 +48,9 @@ unsafe impl RawMutex for RawMutexLock {
                 }
                 backoff::spin_hint();
             }
-            // Eventual Fairness: Increase spin cycles by multipling it by 2, this gives better chance to long waiting threads to acquire Mutex
+            // Eventual Fairness: Increase spin cycles by multipling it by 2,
+            // this gives better chance to long waiting threads to
+            // acquire Mutex
             if cycles < (1 << 31) {
                 cycles <<= 1;
             }

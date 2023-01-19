@@ -16,6 +16,8 @@ const TERMINATED: u8 = 1;
 const LOCKED: u8 = 2;
 const LOCKED_STARVATION: u8 = 3;
 
+/// `KanalWaker` is a structure to enable synchronization in both async and
+/// sync.
 #[repr(u8)]
 pub(crate) enum KanalWaker {
     #[cfg(feature = "async")]
@@ -25,7 +27,8 @@ pub(crate) enum KanalWaker {
     Async(Waker),
 }
 
-/// Signal enum encapsulates both SyncSignal and AsyncSignal to enable them to operate in the same context
+/// `Signal<T>` struct is responsible for communicating between threads and
+/// coroutines for both reads and writes.
 pub struct Signal<T> {
     state: AtomicU8,
     ptr: KanalPtr<T>,
@@ -38,7 +41,7 @@ impl<T> Signal<T> {
     #[cfg(feature = "async")]
     pub(crate) fn new_async() -> Self {
         Self {
-            state: LOCKED.into(),
+            state: AtomicU8::new(LOCKED),
             ptr: Default::default(),
             waker: KanalWaker::None,
         }
@@ -65,7 +68,7 @@ impl<T> Signal<T> {
     #[cfg(feature = "async")]
     pub(crate) fn new_async_ptr(ptr: KanalPtr<T>) -> Self {
         Self {
-            state: LOCKED.into(),
+            state: AtomicU8::new(LOCKED),
             ptr,
             waker: KanalWaker::None,
         }
@@ -75,7 +78,7 @@ impl<T> Signal<T> {
     #[inline(always)]
     pub(crate) fn new_sync(ptr: KanalPtr<T>) -> Self {
         Self {
-            state: LOCKED.into(),
+            state: AtomicU8::new(LOCKED),
             ptr,
             waker: KanalWaker::Sync(None.into()),
         }
@@ -226,7 +229,7 @@ impl<T> Signal<T> {
                     .compare_exchange(LOCKED, state, Ordering::Release, Ordering::Acquire)
                     .is_err()
                 {
-                    let thread = (&*waker.get()).as_ref().unwrap().clone();
+                    let thread = (*waker.get()).as_ref().unwrap().clone();
                     (*this).state.store(state, Ordering::Release);
                     thread.unpark();
                 }
@@ -243,21 +246,24 @@ impl<T> Signal<T> {
     }
 
     /// Sends object to receive signal
-    /// Safety: it's only safe to be called only once on the receive signals that are not terminated
+    /// Safety: it's only safe to be called only once on the receive signals
+    /// that are not terminated
     pub(crate) unsafe fn send(this: *const Self, d: T) {
         (*this).ptr.write(d);
         Self::wake(this, UNLOCKED);
     }
 
     /// Sends object to receive signal by coping the pointer
-    /// Safety: it's only safe to be called only once on the receive signals that are not terminated
+    /// Safety: it's only safe to be called only once on the receive signals
+    /// that are not terminated
     pub(crate) unsafe fn send_copy(this: *const Self, d: *const T) {
         (*this).ptr.copy(d);
         Self::wake(this, UNLOCKED);
     }
 
     /// Receives object from send signal
-    /// Safety: it's only safe to be called only once on send signals that are not terminated
+    /// Safety: it's only safe to be called only once on send signals that are
+    /// not terminated
     pub(crate) unsafe fn recv(this: *const Self) -> T {
         let r = (*this).ptr.read();
         Self::wake(this, UNLOCKED);
@@ -265,13 +271,15 @@ impl<T> Signal<T> {
     }
 
     /// Terminates the signal and notifies its waiter
-    /// Safety: it's only safe to be called only once on send/receive signals that are not finished or terminated
+    /// Safety: it's only safe to be called only once on send/receive signals
+    /// that are not finished or terminated
     pub(crate) unsafe fn terminate(this: *const Self) {
         Self::wake(this, TERMINATED);
     }
 
     /// Loads pointer data and drops it in place
-    /// Safety: it should only be used once, and only when data in ptr is valid and not moved.
+    /// Safety: it should only be used once, and only when data in ptr is valid
+    /// and not moved.
     #[cfg(feature = "async")]
     pub(crate) unsafe fn load_and_drop(&self) {
         _ = self.ptr.read();
