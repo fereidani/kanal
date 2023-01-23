@@ -1,16 +1,16 @@
 use lock_api::{GuardSend, RawMutex};
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::backoff;
-
-const INTIIAL_SPIN_CYCLES: usize = 1 << 2;
-const STRATEGY_SWITCH_THRESHOLD: usize = 5;
-
+use crate::backoff::*;
 pub struct RawMutexLock {
     locked: AtomicBool,
+}
+
+impl RawMutexLock {
+    #[inline(never)]
+    fn lock_no_inline(&self) {
+        spin_cond(|| self.try_lock());
+    }
 }
 
 unsafe impl RawMutex for RawMutexLock {
@@ -24,37 +24,7 @@ unsafe impl RawMutex for RawMutexLock {
         if self.try_lock() {
             return;
         }
-        for _ in 0..STRATEGY_SWITCH_THRESHOLD {
-            for _ in 0..INTIIAL_SPIN_CYCLES {
-                if self.try_lock() {
-                    return;
-                }
-                backoff::spin_hint();
-            }
-            // randomize next entry with yield_now
-            backoff::yield_now();
-        }
-        let mut cycles = INTIIAL_SPIN_CYCLES << 2;
-        loop {
-            // Backoff about 1ms and try harder next time
-            backoff::sleep(Duration::from_nanos(backoff::randomize(1 << 20) as u64));
-            for _ in 0..cycles {
-                if self
-                    .locked
-                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    return;
-                }
-                backoff::spin_hint();
-            }
-            // Eventual Fairness: Increase spin cycles by multipling it by 2,
-            // this gives better chance to long waiting threads to
-            // acquire Mutex
-            if cycles < (1 << 31) {
-                cycles <<= 1;
-            }
-        }
+        self.lock_no_inline();
     }
 
     #[inline(always)]

@@ -79,3 +79,63 @@ fn random_u32() -> u32 {
 pub fn randomize(d: usize) -> usize {
     d - (d >> 3) + random_u32() as usize % (d >> 2)
 }
+
+// Spins until the condition becomes true
+#[allow(dead_code)]
+#[inline(always)]
+pub fn spin_cond<F: Fn() -> bool>(cond: F) {
+    const NO_YIELD: usize = 1;
+    const SPIN_YIELD: usize = 1;
+    const OS_YIELD: usize = 0;
+    const ZERO_SLEEP: usize = 2;
+    const SPINS: u32 = 8;
+
+    let mut spins: u32 = SPINS;
+
+    for _ in 0..NO_YIELD {
+        for _ in 0..SPINS / 2 {
+            if cond() {
+                return;
+            }
+            spin_hint();
+        }
+    }
+
+    loop {
+        for _ in 0..SPIN_YIELD {
+            yield_now();
+
+            for _ in 0..spins {
+                if cond() {
+                    return;
+                }
+            }
+        }
+
+        for _ in 0..OS_YIELD {
+            yield_now_std();
+
+            for _ in 0..spins {
+                if cond() {
+                    return;
+                }
+            }
+        }
+
+        for _ in 0..ZERO_SLEEP {
+            sleep(Duration::from_nanos(0));
+
+            for _ in 0..spins {
+                if cond() {
+                    return;
+                }
+            }
+        }
+
+        if spins < (1 << 30) {
+            spins <<= 1;
+        }
+        // Backoff 1ms
+        sleep(Duration::from_nanos(1 << 20));
+    }
+}
