@@ -13,12 +13,12 @@
 [doc-url]: https://docs.rs/kanal
 
 ## What is Kanal
-The Kanal library is a Rust implementation of channels of the CSP (Communicating Sequential Processes) model, designed to assist programmers in creating efficient programs. This library provides multi-producer and multi-consumer channels with advanced features and lock-free one-shot channels that only allocate the size of a pointer in the heap, allowing for fast communication. The library has a focus on unifying message passing between synchronous and asynchronous portions of Rust code through a combination of synchronous and asynchronous APIs, while maintaining high performance.
+The Kanal library is a Rust implementation of channels of the CSP (Communicating Sequential Processes) model, designed to assist programmers in creating efficient concurrent programs. This library provides multi-producer and multi-consumer channels with advanced features and lock-free one-shot channels that only allocate the size of a pointer in the heap, allowing for fast communication. The library has a focus on unifying message passing between synchronous and asynchronous portions of Rust code through a combination of synchronous and asynchronous APIs while maintaining high performance.
 
 
 ## Why Kanal is faster?
 1. Kanal employs a highly optimized composite technique for the transfer of objects. When the data size is less than or equal to the pointer size, it utilizes serialization, encoding the data as the pointer address. Conversely, when the data size exceeds the pointer size, the protocol employs a strategy similar to that utilized by the Golang programming language, utilizing direct memory access to copy objects from the sender's stack or write directly to the receiver's stack. This composite method not only eliminates unnecessary pointer access but also eliminates heap allocations for bounded(0) channels.
-2. Kanal utilizes a specially tuned mutex for its channel locking mechanism, made possible by the predictable internal lock time of the channel. That said it's possible to use Rust standard mutex with `std-mutex` feature and Kanal will perform better than competitors with that feature too.
+2. Kanal utilizes a specially tuned mutex for its channel locking mechanism, made possible by the predictable internal lock time of the channel. That said it's possible to use Rust standard mutex with the `std-mutex` feature and Kanal will perform better than competitors with that feature too.
 3. Utilizing Rust high-performance compiler and powerful LLVM backend with highly optimized memory access and deeply thought algorithms.
 
 ## Why use Kanal?
@@ -26,7 +26,8 @@ The Kanal library is a Rust implementation of channels of the CSP (Communicating
 * Kanal is fast and efficient in communication
 * Kanal can communicate in both sync and async and even between sync and async by providing methods to transform sender/receiver to other API.
 * Kanal provides cleaner API in comparison with other rust libraries
-* Similar to Golang you have access to `Close` function and you can broadcast the close signal from any instance of the channel, to close the channel for both sides.
+* Similar to Golang you have access to the `Close` function and you can broadcast the close signal from any instance of the channel, to close the channel for both sides.
+* Kanal provides high-performance MPMC channels and lock-free one-shot channels in one package.
 
 ## Why not use Kanal?
 
