@@ -3,6 +3,7 @@
 
 pub(crate) mod backoff;
 pub(crate) mod internal;
+#[cfg(not(feature = "std-mutex"))]
 pub(crate) mod mutex;
 pub(crate) mod pointer;
 
@@ -31,14 +32,17 @@ use std::{marker::PhantomPinned, mem::transmute};
 /// Sending side of the channel with sync API. It's possible to convert it to
 /// async [`AsyncSender`] with `as_async`, `to_async` or `clone_async` based on
 /// software requirement.
-///
-/// # Examples
-///
-/// ```ignore
-/// # // ignored because it correctly fails with --no-default-features
-/// let (sender, _r) = kanal::bounded::<u64>(0);
-/// let sync_sender=sender.clone_async();
-/// ```
+#[cfg_attr(
+    feature = "async",
+    doc = r##"
+# Examples
+
+```
+let (sender, _r) = kanal::bounded::<u64>(0);
+let sync_sender=sender.clone_async();
+```
+"##
+)]
 pub struct Sender<T> {
     internal: Internal<T>,
 }
@@ -998,14 +1002,18 @@ impl<T> AsyncSender<T> {
 /// Receiving side of the channel in sync mode.
 /// Receivers can be cloned and produce receivers to operate in both sync and
 /// async modes.
-///
-/// # Examples
-///
-/// ```ignore
-/// # // ignored because it correctly fails with --no-default-features
-/// let (_s, receiver) = kanal::bounded::<u64>(0);
-/// let async_receiver=receiver.clone_async();
-/// ```
+#[cfg_attr(
+    feature = "async",
+    doc = r##"
+# Examples
+
+```
+let (_s, receiver) = kanal::bounded::<u64>(0);
+let async_receiver=receiver.clone_async();
+```
+"##
+)]
+
 pub struct Receiver<T> {
     internal: Internal<T>,
 }

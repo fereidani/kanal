@@ -13,7 +13,7 @@
 /// Channel states are simple,
 /// WAITING = null pointer
 /// FINISHED = full 1 bits pattern of the pointer
-/// ANY OTHER ADDRESS = ptr to winner signal address
+/// ANY OTHER ADDRESS = pointer to winner signal address
 ///
 /// Both side of sender and receiver can know which is the winner by a simple
 /// fact. If winner is not a pointer to their signal, they are the one that
@@ -23,7 +23,7 @@
 /// means winner.
 ///
 /// Both side in start are racing to win the pointer, if one loses, they can
-/// find the correct state of channel based on ptr address. If it is a pointer
+/// find the correct state of channel based on pointer address. If it is a pointer
 /// to a memory location that is not FINISHED, other thread/coroutine is
 /// suspended on its signal and loser should finish the signal. If it is a
 /// pointer with value of FINISHED, channel is dropped from other side, and
@@ -40,7 +40,7 @@
 /// commit to finishing the transaction, and if loser changes it, it implies
 /// that loser is canceling the operation completely.
 ///
-/// Memory management is simple, there is no finishing state that ptr does
+/// Memory management is simple, there is no finishing state that pointer does
 /// not change to FINISHED, and first one to reach that state is going to leave
 /// the pointer for latest owner of channel either sender or receiver to free
 /// the heep allocation.
@@ -614,21 +614,27 @@ impl<T> OneshotAsyncReceiver<T> {
 /// # anyhow::Ok(())
 /// ```
 ///
-/// ```
-/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// # use tokio::{spawn as co};
-/// # use std::time::Duration;
-///   let (s, r) = kanal::oneshot();
-///   // launch a coroutine for tokio
-///   co(async move {
-///     // convert to async api and send message asynchronously
-///     s.to_async().send("World").await.unwrap();
-///   });
-///   let name=r.recv()?;
-///   println!("Hello {}!",name);
-/// # anyhow::Ok(())
-/// # });
-/// ```
+#[cfg_attr(
+    feature = "async",
+    doc = r##"
+```
+# tokio::runtime::Runtime::new().unwrap().block_on(async {
+# use tokio::{spawn as co};
+# use std::time::Duration;
+  let (s, r) = kanal::oneshot();
+  // launch a coroutine for tokio
+  co(async move {
+    // convert to async api and send message asynchronously
+    s.to_async().send("World").await.unwrap();
+  });
+  let name=r.recv()?;
+  println!("Hello {}!",name);
+# anyhow::Ok(())
+# });
+```
+"##
+)]
+
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     let ptr = Box::into_raw(Box::new(OneshotInternal {
         ptr: (WAITING as *mut Signal<T>).into(),
