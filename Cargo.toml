@@ -1,6 +1,6 @@
 [package]
 name = "kanal"
-version = "0.1.0-pre7"
+version = "0.1.0-pre8"
 edition = "2021"
 authors = ["Khashayar Fereidani"]
 description = "The fast sync and async channel that Rust deserves"

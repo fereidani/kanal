@@ -50,14 +50,14 @@ Results are based on how many messages can be passed in each scenario per second
 N/A means that the test subject is unable to perform the test due to its limitations, Some of the test subjects don't have implementation for size 0 channels, MPMC or unbounded channels.
 
 Machine: `AMD Ryzen Threadripper 2950X 16-Core Processor`<br />
-Rust: `rustc 1.65.0 (897e37553 2022-11-02)`<br />
-Go: `go version go1.19.3 linux/amd64`<br />
-OS (`uname -a`): `Linux 5.15.0-52-generic #58~20.04.1-Ubuntu SMP Thu Oct 13 13:09:46 UTC 2022 x86_64`<br />
-Date: Nov 13, 2022
+Rust: `rustc 1.66.1 (90743e729 2023-01-10)`<br />
+Go: `go version go1.19.5 linux/amd64`<br />
+OS (`uname -a`): `Linux 5.15.0-58-generic #64~20.04.1-Ubuntu SMP Fri Jan 6 16:42:31 UTC 2023 x86_64`<br />
+Date: Jan 25, 2023
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
-![Benchmarks](https://i.imgur.com/i10Ayjw.png)
+![Benchmarks](https://i.imgur.com/ReEQWKa.png)
 
 #### Why async outperforms sync in some tests?
 In certain tests, asynchronous communication may exhibit superior performance compared to synchronous communication. This can be attributed to the context-switching performance of libraries such as tokio, which, similar to Golang, utilize context-switching within the same thread to switch to the next coroutine when a message is ready on a channel. This approach is more efficient than communicating between separate threads. This same principle applies to asynchronous network applications, which generally exhibit better performance compared to synchronous implementations. As the channel size increases, one may observe improved performance in synchronous benchmarks, as the sending threads are able to push data directly to the channel queue without requiring awaiting blocking/suspending signals from receiving threads.
