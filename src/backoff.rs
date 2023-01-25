@@ -82,6 +82,7 @@ pub fn randomize(d: usize) -> usize {
 
 // Spins until the condition becomes true
 #[allow(dead_code)]
+#[allow(clippy::reversed_empty_ranges)]
 #[inline(always)]
 pub fn spin_cond<F: Fn() -> bool>(cond: F) {
     const NO_YIELD: usize = 1;
