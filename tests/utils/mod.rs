@@ -1,6 +1,10 @@
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    task::Wake,
+    thread::Thread,
 };
 
 #[cfg(not(miri))]
@@ -57,5 +61,20 @@ impl DropTester {
             dropped: false,
             counter,
         }
+    }
+}
+
+pub struct ThreadWaker(Thread);
+
+impl ThreadWaker {
+    #[allow(dead_code)]
+    pub fn new() -> Arc<Self> {
+        Self(std::thread::current()).into()
+    }
+}
+
+impl Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark()
     }
 }
