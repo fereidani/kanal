@@ -171,8 +171,10 @@ fn integrity_padded_c() {
 
 #[cfg(feature = "async")]
 mod asyncs {
+    use futures::{executor::block_on, Future};
+
     use super::*;
-    use std::time::Duration;
+    use std::{task::Context, time::Duration};
 
     macro_rules! integrity_test {
         ($zero:expr,$ones:expr) => {
@@ -231,7 +233,7 @@ mod asyncs {
     }
 
     #[tokio::test]
-    async fn send_drop() {
+    async fn send_to_dropped() {
         for _ in 0..100 {
             let (s, r) = kanal::oneshot_async();
             let h = tokio::spawn(async move {
@@ -243,7 +245,19 @@ mod asyncs {
     }
 
     #[tokio::test]
-    async fn receive_drop() {
+    async fn send_panic() {
+        for _ in 0..100 {
+            let (s, r) = kanal::oneshot_async();
+            let h = tokio::spawn(async move {
+                assert!(s.send(Box::new(!0)).await.is_err());
+            });
+            drop(r);
+            h.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn receive_from_dropped() {
         for _ in 0..100 {
             let (s, r) = kanal::oneshot_async::<Box<usize>>();
             let h = tokio::spawn(async move {
@@ -251,6 +265,40 @@ mod asyncs {
             });
             drop(s);
             h.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn receive_win_panic() {
+        for _ in 0..100 {
+            let (s, r) = kanal::oneshot_async::<Box<usize>>();
+            let h = std::thread::spawn(move || {
+                let mut fut = Box::pin(r.recv());
+                let waker = ThreadWaker::new().into();
+                let mut cx = Context::from_waker(&waker);
+                assert!(fut.as_mut().poll(&mut cx).is_pending());
+                panic!("oh no!");
+            });
+            std::thread::sleep(Duration::from_millis(10));
+            block_on(s.send(10.into())).unwrap_err();
+            h.join().unwrap_err();
+        }
+    }
+
+    #[test]
+    fn send_win_panic() {
+        for _ in 0..100 {
+            let (s, r) = kanal::oneshot_async::<Box<usize>>();
+            let h = std::thread::spawn(move || {
+                let mut fut = Box::pin(s.send(10.into()));
+                let waker = ThreadWaker::new().into();
+                let mut cx = Context::from_waker(&waker);
+                assert!(fut.as_mut().poll(&mut cx).is_pending());
+                panic!("oh no!");
+            });
+            std::thread::sleep(Duration::from_millis(10));
+            block_on(r.recv()).unwrap_err();
+            h.join().unwrap_err();
         }
     }
 
