@@ -1,3 +1,4 @@
 /target
 /dev
 Cargo.lock
+rustfmt.toml

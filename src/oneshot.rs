@@ -578,7 +578,6 @@ impl<T> OneshotAsyncReceiver<T> {
 ///  println!("Hello {}!",name);
 /// # anyhow::Ok(())
 /// ```
-///
 #[cfg_attr(
     feature = "async",
     doc = r##"
@@ -937,7 +936,10 @@ pub struct OneshotReceiveFuture<T> {
 #[cfg(feature = "async")]
 impl<T> Drop for OneshotReceiveFuture<T> {
     fn drop(&mut self) {
-        if self.state != FutureState::Done && drop_future(&self.state, self.internal_ptr, &self.sig) && needs_drop::<T>() {
+        if self.state != FutureState::Done
+            && drop_future(&self.state, self.internal_ptr, &self.sig)
+            && needs_drop::<T>()
+        {
             // Otherside successfully send its data.
             // this side is responsible for dropping its data.
             unsafe {
