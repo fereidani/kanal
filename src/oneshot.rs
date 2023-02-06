@@ -23,8 +23,8 @@
 /// means winner.
 ///
 /// Both side in start are racing to win the pointer, if one loses, they can
-/// find the correct state of channel based on pointer address. If it is a pointer
-/// to a memory location that is not FINISHED, other thread/coroutine is
+/// find the correct state of channel based on pointer address. If it is a
+/// pointer to a memory location that is not FINISHED, other thread/coroutine is
 /// suspended on its signal and loser should finish the signal. If it is a
 /// pointer with value of FINISHED, channel is dropped from other side, and
 /// operation is failed.
@@ -204,7 +204,7 @@ impl<T> OneshotInternal<T> {
 
 // Returns true if transfer was successfull.
 #[inline(never)]
-fn try_drop_send_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
+fn try_drop_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
     let internal = unsafe { internal_ptr.as_ref() };
     loop {
         // Safety: other side can't drop internal, if this side is not in
@@ -218,11 +218,11 @@ fn try_drop_send_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
             ActionResult::Racing => {
                 unreachable!("already tried updating from this state")
             }
-            ActionResult::Winner(receiver) => {
-                if internal.try_finish(receiver).is_ok() {
+            ActionResult::Winner(winner) => {
+                if internal.try_finish(winner).is_ok() {
                     // Safety: as status is waiting we know that we lost the
                     // race, so recv_signal is valid.
-                    unsafe { SignalTerminator::from(receiver).terminate() };
+                    unsafe { SignalTerminator::from(winner).terminate() };
                     return false;
                 }
                 // CONTINUE
@@ -237,40 +237,6 @@ fn try_drop_send_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
     }
 }
 
-// Returns true if transfer was successfull
-#[inline(never)]
-fn try_drop_recv_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
-    let internal = unsafe { internal_ptr.as_ref() };
-    loop {
-        // Safety: other side can't drop internal, if this side is not in
-        // finishing stage
-        match internal.try_terminate() {
-            ActionResult::Ok => {
-                // Signal state is updated to finishing other side is
-                // responsible for dropping the internal
-                return false;
-            }
-            ActionResult::Racing => {
-                unreachable!("already tried updating from this state")
-            }
-            ActionResult::Winner(sender) => {
-                if internal.try_finish(sender).is_ok() {
-                    // Safety: as status is waiting we know that we lost the
-                    // race, so recv_signal is valid.
-                    unsafe { SignalTerminator::from(sender).terminate() };
-                    return false;
-                }
-                // CONTINUE
-            }
-            ActionResult::Finish => {
-                // Safety: other side updated status to finishing before, it's
-                // safe to release memory now.
-                unsafe { internal_ptr.drop() }
-                return true;
-            }
-        }
-    }
-}
 /// [`OneshotSender<T>`] is the sender side of oneshot channel that can send a
 /// single message. It can be converted to async [`OneshotAsyncSender<T>`] by
 /// calling [`Self::to_async`]. Sending a message is achievable with
@@ -291,7 +257,7 @@ impl<T> Debug for OneshotSender<T> {
 
 impl<T> Drop for OneshotSender<T> {
     fn drop(&mut self) {
-        try_drop_send_internal(self.internal_ptr);
+        try_drop_internal(self.internal_ptr);
     }
 }
 
@@ -405,7 +371,7 @@ impl<T> Debug for OneshotAsyncSender<T> {
 #[cfg(feature = "async")]
 impl<T> Drop for OneshotAsyncSender<T> {
     fn drop(&mut self) {
-        try_drop_send_internal(self.internal_ptr);
+        try_drop_internal(self.internal_ptr);
     }
 }
 
@@ -425,7 +391,7 @@ impl<T> Debug for OneshotReceiver<T> {
 
 impl<T> Drop for OneshotReceiver<T> {
     fn drop(&mut self) {
-        try_drop_recv_internal(self.internal_ptr);
+        try_drop_internal(self.internal_ptr);
     }
 }
 
@@ -438,7 +404,6 @@ impl<T> OneshotReceiver<T> {
         let internal = unsafe { self.internal_ptr.as_ref() };
         let mut ret = MaybeUninit::<T>::uninit();
         let sig = Signal::new_sync(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-        // Safety: self.internal is guaranteed to be valid through Arc reference
         loop {
             match internal.try_win_race(&sig) {
                 ActionResult::Ok => {
@@ -532,7 +497,7 @@ impl<T> Debug for OneshotAsyncReceiver<T> {
 #[cfg(feature = "async")]
 impl<T> Drop for OneshotAsyncReceiver<T> {
     fn drop(&mut self) {
-        try_drop_recv_internal(self.internal_ptr);
+        try_drop_internal(self.internal_ptr);
     }
 }
 
@@ -708,6 +673,60 @@ pub fn oneshot_async<T>() -> (OneshotAsyncSender<T>, OneshotAsyncReceiver<T>) {
     )
 }
 
+/// Drops the future and returns true if future task is completed
+#[inline(always)]
+#[cfg(feature = "async")]
+fn drop_future<T>(
+    state: &FutureState,
+    internal_ptr: OneshotInternalPointer<T>,
+    sig: &Signal<T>,
+) -> bool {
+    match state {
+        FutureState::Zero => {
+            try_drop_internal(internal_ptr);
+            false
+        }
+        FutureState::Waiting => {
+            // If local state is waiting, this side won the signal pointer,
+            // loser will never go to waiting state under no
+            // condition.
+            // Safety: other side can't drop internal, if this side is not in finishing
+            // stage
+            let internal = unsafe { internal_ptr.as_ref() };
+            match internal.try_finish(sig) {
+                ActionResult::Ok => {
+                    // Data is not moved, as the winner itself finished the state
+                    false
+                }
+                ActionResult::Racing | ActionResult::Winner(_) => {
+                    // Signal is owned, only this side can change it to racing to give a change
+                    // to other side to win the signal again, and it will not to. Winner can't
+                    // be anything but this signal.
+                    unreachable!(
+                        "won signal can't change state to racing or winner from other side"
+                    )
+                }
+                ActionResult::Finish => {
+                    // otherside already received signal wait for the result
+                    let success = sig.async_blocking_wait();
+                    // Safety: winner is this side and transfer is done, this side is
+                    // responsible for dropping the internal
+                    unsafe {
+                        internal_ptr.drop();
+                    }
+                    success
+                }
+            }
+        }
+        FutureState::Done => {
+            // No action required, when future reaches the
+            // done state, it already handled the internal_ptr drop in its
+            // future execution
+            true
+        }
+    }
+}
+
 /// Oneshot channel send future that asynchronously sends data to the oneshot
 /// receiver. returns `Ok(())` and in case of failure it returns back the
 /// sending object as `Err(T)`.
@@ -722,61 +741,14 @@ pub struct OneshotSendFuture<T> {
 
 #[cfg(feature = "async")]
 impl<T> Drop for OneshotSendFuture<T> {
-    #[inline(always)]
     fn drop(&mut self) {
-        match self.state {
-            FutureState::Zero => {
-                try_drop_send_internal(self.internal_ptr);
-            }
-            FutureState::Waiting => {
-                // If local state is waiting, this side won the signal pointer,
-                // loser will never go to waiting state under no
-                // condition.
-                // Safety: other side can't drop internal, if this side is not in finishing
-                // stage
-                let internal = unsafe { self.internal_ptr.as_ref() };
-                match internal.try_finish(&self.sig) {
-                    ActionResult::Ok => {
-                        // Otherside is responsible for dropping internal
-                        // This future can't return the owned send data as error
-                        // so it should drop it
-                        if needs_drop::<T>() {
-                            unsafe {
-                                self.drop_local_data();
-                            }
-                        }
-                    }
-                    ActionResult::Racing | ActionResult::Winner(_) => {
-                        // Signal is owned, only this side can change it to racing to give a change
-                        // to other side to win the signal again, and it will not to. Winner can't
-                        // be anything but this signal.
-                        unreachable!(
-                            "won signal can't change state to racing or winner from other side"
-                        )
-                    }
-                    ActionResult::Finish => {
-                        // otherside already received signal wait for the result
-                        if !self.sig.async_blocking_wait() {
-                            // This future can't return the owned send data as error so it should
-                            // drop it
-                            if needs_drop::<T>() {
-                                unsafe {
-                                    self.drop_local_data();
-                                }
-                            }
-                        }
-                        // Safety: winner is this side and transfer is done, this side is
-                        // responsible for dropping the internal
-                        unsafe {
-                            self.internal_ptr.drop();
-                        }
-                    }
+        if !drop_future(&self.state, self.internal_ptr, &self.sig) {
+            // Send failed and this future can't return the owned send data as error so it
+            // should drop it
+            if needs_drop::<T>() {
+                unsafe {
+                    self.drop_local_data();
                 }
-            }
-            FutureState::Done => {
-                // No action required, when future reaches .join().unwrap();the
-                // done state, it already handled the internal_ptr drop in its
-                // future execution
             }
         }
     }
@@ -917,7 +889,6 @@ impl<T> Future for OneshotSendFuture<T> {
                                 // state to racing, update waker, then trying to win the signal
                                 // pointer again
                                 if internal.try_reset(&this.sig).is_ok() {
-                                    println!("update oneshot waker");
                                     // Signal pointer is released, participate in the race again
                                     this.state = FutureState::Zero;
                                     continue;
@@ -965,52 +936,15 @@ pub struct OneshotReceiveFuture<T> {
 
 #[cfg(feature = "async")]
 impl<T> Drop for OneshotReceiveFuture<T> {
-    #[inline(always)]
     fn drop(&mut self) {
-        match self.state {
-            FutureState::Zero => {
-                try_drop_recv_internal(self.internal_ptr);
-            }
-            FutureState::Waiting => {
-                // If local state is waiting, this side won the signal pointer, loser will never
-                // go to waiting state under no condition.
-                // Safety: other side can't drop internal, if this side is not in finishing
-                // stage
-                let internal = unsafe { self.internal_ptr.as_ref() };
-                match internal.try_finish(&self.sig) {
-                    ActionResult::Ok => {
-                        // Otherside is responsible for dropping internal
-                    }
-                    ActionResult::Racing | ActionResult::Winner(_) => {
-                        // Signal is owned, only this side can change it to racing to give a change
-                        // to other side to win the signal again, and it will not to. Winner can't
-                        // be anything but this signal.
-                        unreachable!(
-                            "won signal can't change state to racing or winner from other side"
-                        )
-                    }
-                    ActionResult::Finish => {
-                        // otherside already received signal wait for the result
-                        if self.sig.async_blocking_wait() {
-                            // to avoid memory leaks receiver should drop the local data as it can't
-                            // return it
-                            if needs_drop::<T>() {
-                                unsafe {
-                                    self.drop_local_data();
-                                }
-                            }
-                        }
-                        // Safety: winner is this side and transfer is done, this side is
-                        // responsible for dropping the internal
-                        unsafe {
-                            self.internal_ptr.drop();
-                        }
-                    }
+        if self.state != FutureState::Done && drop_future(&self.state, self.internal_ptr, &self.sig)
+        {
+            if needs_drop::<T>() {
+                // Otherside successfully send its data.
+                // this side is responsible for dropping its data.
+                unsafe {
+                    self.drop_local_data();
                 }
-            }
-            FutureState::Done => {
-                // No action required, when future reaches the done state, it
-                // already handled the internal_ptr drop in its future execution
             }
         }
     }
