@@ -360,7 +360,7 @@ mod asyncs {
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..10 {
             let counter = counter.clone();
-            let _ = s.send(DropTester::new(counter, 1234));
+            drop(s.send(DropTester::new(counter, 1234)));
         }
         r.close();
         assert_eq!(counter.load(Ordering::SeqCst), 10_usize);
