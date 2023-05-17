@@ -57,6 +57,7 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     mem::{forget, size_of, MaybeUninit},
+    ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
 #[cfg(feature = "async")]
@@ -66,7 +67,7 @@ use std::{
     task::Poll,
 };
 
-const WAITING: *mut () = std::ptr::null_mut::<()>();
+const WAITING: *mut () = ptr::null_mut::<()>();
 const FINISHED: *mut () = !0usize as *mut ();
 
 /// [`ActionResult`] translates state of compare_exchange off the AtomicPtr to
@@ -770,7 +771,7 @@ impl<T> OneshotSendFuture<T> {
         if size_of::<T>() > size_of::<*mut T>() {
             // if its smaller than register size, it does not need pointer setup
             // as data will be stored in register address object
-            std::ptr::read(self.data.as_ptr())
+            ptr::read(self.data.as_ptr())
         } else {
             self.sig.assume_init()
         }
@@ -966,7 +967,7 @@ impl<T> OneshotReceiveFuture<T> {
         if size_of::<T>() > size_of::<*mut T>() {
             // if its smaller than register size, it does not need pointer setup
             // as data will be stored in register address object
-            std::ptr::read(self.data.as_ptr())
+            ptr::read(self.data.as_ptr())
         } else {
             self.sig.assume_init()
         }
