@@ -321,6 +321,6 @@ impl<T> PartialEq<Signal<T>> for SignalTerminator<T> {
 }
 
 // If internal<T> is safe to send SignalPtr<T> is safe to send.
-unsafe impl<T> Send for SignalTerminator<T> {}
+unsafe impl<T: Send> Send for SignalTerminator<T> {}
 // If internal<T> is safe to send Signal<T> is safe to send.
-unsafe impl<T> Send for Signal<T> {}
+unsafe impl<T: Send> Send for Signal<T> {}

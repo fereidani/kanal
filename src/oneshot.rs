@@ -137,7 +137,7 @@ impl<T> OneshotInternalPointer<T> {
         let _ = Box::from_raw(self.ptr);
     }
 }
-unsafe impl<T> Send for OneshotInternalPointer<T> {}
+unsafe impl<T: Send> Send for OneshotInternalPointer<T> {}
 
 impl<T> OneshotInternal<T> {
     /// Tries to inform other side that signal is ready. If it's done
