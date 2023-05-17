@@ -1,34 +1,38 @@
-/// Separate module for backoff strategy.
-/// The reason of seperating backoff to independent module is that with
-/// this approach it is easier  to test and compare different backoff
-/// solutions.
+/// This module provides various backoff strategies that can be used to reduce
+/// the amount of busy waiting and improve the efficiency of concurrent systems.
+///
+/// The main idea behind separating backoff into an independent module is that
+/// it makes it easier to test and compare different backoff solutions.
 use std::{
     sync::atomic::{AtomicU32, AtomicU8, Ordering},
     time::Duration,
 };
 
-/// Puts current thread to sleep for amount of duration.
+/// Puts the current thread to sleep for a specified duration.
 #[inline(always)]
 pub fn sleep(dur: Duration) {
     std::thread::sleep(dur)
 }
 
-/// Emits cpu instruction that signals the processor that it is in spin loop.
+/// Emits a CPU instruction that signals the processor that it is in a spin
+/// loop.
 #[allow(dead_code)]
 #[inline(always)]
 pub fn spin_hint() {
     std::hint::spin_loop()
 }
 
-/// Std library yield now
+/// Yields the thread to the scheduler.
 #[allow(dead_code)]
 #[inline(always)]
 pub fn yield_now_std() {
-    // uses libc's sched_yield on unix and SwitchToThread on windows
+    // On Unix systems, this function uses libc's sched_yield(), which cooperatively
+    // gives up a random timeslice to another thread. On Windows systems, it
+    // uses SwitchToThread(), which does the same thing.
     std::thread::yield_now();
 }
 
-/// Spins in a loop for finite amount of time.
+/// Spins in a loop for a finite amount of time.
 #[allow(dead_code)]
 #[inline(always)]
 pub fn spin_wait(count: usize) {
@@ -37,33 +41,37 @@ pub fn spin_wait(count: usize) {
     }
 }
 
-// Cooperatively gives up a random timeslice
+/// Yields the thread to the scheduler for a short random duration.
+/// This function is implemented using a simple 7-bit pseudo random number
+/// generator based on an atomic fetch-and-add operation.
 #[allow(dead_code)]
 #[inline(always)]
 pub fn yield_now() {
-    // This number will be added to the calculate pseudo random to avoid short
-    // spins
+    // This number will be added to the calculated pseudo-random number to avoid
+    // short spins.
     const OFFSET: usize = 1 << 6;
     spin_wait((random_u7() as usize).wrapping_add(OFFSET));
 }
 
-/// Generates a 7-bits pseudo random number using atomics with LCG like
-/// algorithm This generator is only suited for special use-case of yield_now,
-/// and not recommended for use anywhere else.
+/// Generates a 7-bit pseudo-random number using an atomic fetch-and-add
+/// operation and a linear congruential generator (LCG)-like algorithm.
+/// This generator is only suited for the special use-case of yield_now(), and
+/// not recommended for use anywhere else.
 #[allow(dead_code)]
 #[inline(always)]
 fn random_u7() -> u8 {
     static SEED: AtomicU8 = AtomicU8::new(13);
     const MULTIPLIER: u8 = 113;
-    // Increment the seed atomically, Relaxed ordering is enough as we need
-    // atomic operation only on the SEED itself.
+    // Increment the seed atomically. Relaxed ordering is enough as we only need an
+    // atomic operation on the SEED itself.
     let seed = SEED.fetch_add(1, Ordering::Relaxed);
-    // Use a LCG like algorithm to generate a random number from the seed
+    // Use a LCG-like algorithm to generate a random number from the seed.
     seed.wrapping_mul(MULTIPLIER) & 0x7F
 }
 
-/// Generates a pseudo u32 random number using atomics with LCG like algorithm
-/// same as random_u8
+/// Generates a pseudo-random u32 number using an atomic fetch-and-add operation
+/// and a LCG-like algorithm. This function is implemented using the same
+/// algorithm as random_u8().
 #[allow(dead_code)]
 #[inline(always)]
 fn random_u32() -> u32 {
@@ -73,14 +81,32 @@ fn random_u32() -> u32 {
     seed.wrapping_mul(MULTIPLIER)
 }
 
-// Randomizes the input 25%
+/// Randomizes the input by up to 25%.
+/// This function is used to introduce some randomness into backoff strategies.
 #[allow(dead_code)]
 #[inline(always)]
 pub fn randomize(d: usize) -> usize {
     d - (d >> 3) + random_u32() as usize % (d >> 2)
 }
 
-// Spins until the condition becomes true
+/// Spins until the specified condition becomes true.
+/// This function uses a combination of spinning, yielding, and sleeping to
+/// reduce busy waiting and improve the efficiency of concurrent systems.
+///
+/// The function starts with a short spinning phase, followed by a longer
+/// spinning and yielding phase, then a longer spinning and yielding phase with
+/// the operating system's yield function, and finally a phase with zero-length
+/// sleeping and yielding.
+///
+/// The function uses a geometric backoff strategy to increase the spin time
+/// between each phase. The spin time starts at 8 iterations and doubles after
+/// each unsuccessful iteration, up to a maximum of 2^30 iterations.
+///
+/// The function also uses a simple randomization strategy to introduce some
+/// variation into the spin time.
+///
+/// The function takes a closure that returns a boolean value indicating whether
+/// the condition has been met. The function returns when the condition is true.
 #[allow(dead_code)]
 #[allow(clippy::reversed_empty_ranges)]
 #[inline(always)]
@@ -90,9 +116,9 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
     const OS_YIELD: usize = 0;
     const ZERO_SLEEP: usize = 2;
     const SPINS: u32 = 8;
-
     let mut spins: u32 = SPINS;
 
+    // Short spinning phase
     for _ in 0..NO_YIELD {
         for _ in 0..SPINS / 2 {
             if cond() {
@@ -102,6 +128,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
         }
     }
 
+    // Longer spinning and yielding phase
     loop {
         for _ in 0..SPIN_YIELD {
             yield_now();
@@ -113,6 +140,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             }
         }
 
+        // Longer spinning and yielding phase with OS yield
         for _ in 0..OS_YIELD {
             yield_now_std();
 
@@ -123,6 +151,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             }
         }
 
+        // Phase with zero-length sleeping and yielding
         for _ in 0..ZERO_SLEEP {
             sleep(Duration::from_nanos(0));
 
@@ -133,10 +162,11 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             }
         }
 
+        // Geometric backoff
         if spins < (1 << 30) {
             spins <<= 1;
         }
-        // Backoff 1ms
+        // Backoff about 1ms
         sleep(Duration::from_nanos(1 << 20));
     }
 }
