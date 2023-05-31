@@ -48,7 +48,8 @@ pub(crate) struct ChannelInternal<T> {
     pub(crate) send_count: u32,
 }
 
-// Safety: It is safe to implement `Send` for `ChannelInternal<T>` if `T` is `Send`.
+// Safety: It is safe to implement `Send` for `ChannelInternal<T>` if `T` is
+// `Send`.
 unsafe impl<T: Send> Send for ChannelInternal<T> {}
 
 impl<T> ChannelInternal<T> {
