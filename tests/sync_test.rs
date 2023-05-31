@@ -271,7 +271,7 @@ fn recv_from_half_closed_channel() {
 #[test]
 fn recv_from_closed_channel() {
     let (tx, rx) = new::<u64>(Some(1));
-    tx.close();
+    tx.close().unwrap();
     assert_eq!(rx.recv().err().unwrap(), ReceiveError::Closed);
 }
 
@@ -279,7 +279,7 @@ fn recv_from_closed_channel() {
 fn recv_from_closed_channel_queue() {
     let (tx, rx) = new(Some(1));
     tx.send(Box::new(1)).unwrap();
-    tx.close();
+    tx.close().unwrap();
     // it's not possible to read data from queue of fully closed channel
     assert_eq!(rx.recv().err().unwrap(), ReceiveError::Closed);
 }
@@ -297,7 +297,7 @@ fn send_to_half_closed_channel() {
 #[test]
 fn send_to_closed_channel() {
     let (tx, rx) = new(Some(1));
-    rx.close();
+    rx.close().unwrap();
     assert_eq!(tx.send(Box::new(1)).err().unwrap(), SendError::Closed);
 }
 
@@ -316,7 +316,7 @@ fn drop_test_in_queue() {
     for _ in 0..10 {
         s.send(DropTester::new(counter.clone(), 1234)).unwrap();
     }
-    r.close();
+    r.close().unwrap();
     assert_eq!(counter.load(Ordering::SeqCst), 10_usize);
 }
 
@@ -324,7 +324,7 @@ fn drop_test_in_queue() {
 fn drop_test_send_to_closed() {
     let counter = Arc::new(AtomicUsize::new(0));
     let (s, r) = new(Some(10));
-    r.close();
+    r.close().unwrap();
     for _ in 0..10 {
         // will fail
         let _ = s.send(DropTester::new(counter.clone(), 1234));
@@ -360,7 +360,7 @@ fn drop_test_in_signal() {
             list.push(t);
         }
         std::thread::sleep(Duration::from_millis(1000));
-        r.close();
+        r.close().unwrap();
         for t in list {
             t.join().unwrap();
         }

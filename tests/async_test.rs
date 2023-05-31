@@ -228,7 +228,7 @@ mod asyncs {
             });
             list.push(c);
         }
-        r.close();
+        r.close().unwrap();
         for c in list {
             c.await.unwrap();
         }
@@ -255,7 +255,7 @@ mod asyncs {
     #[tokio::test]
     async fn recv_from_closed_channel() {
         let (tx, rx) = new::<u64>(Some(1));
-        tx.close();
+        tx.close().unwrap();
         assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::Closed);
     }
 
@@ -263,7 +263,7 @@ mod asyncs {
     async fn recv_from_closed_channel_queue() {
         let (tx, rx) = new(Some(1));
         tx.send(Box::new(1)).await.unwrap();
-        tx.close();
+        tx.close().unwrap();
         // it's not possible to read data from queue of fully closed channel
         assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::Closed);
     }
@@ -281,7 +281,7 @@ mod asyncs {
     #[tokio::test]
     async fn send_to_closed_channel() {
         let (tx, rx) = new(Some(1));
-        rx.close();
+        rx.close().unwrap();
         assert_eq!(tx.send(Box::new(1)).await.err().unwrap(), SendError::Closed);
     }
 
@@ -304,7 +304,7 @@ mod asyncs {
         for c in list {
             c.abort();
         }
-        r.close();
+        r.close().unwrap();
     }
 
     // Drop tests
@@ -329,7 +329,7 @@ mod asyncs {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 10_usize);
-        r.close();
+        r.close().unwrap();
     }
 
     #[tokio::test]
@@ -349,7 +349,7 @@ mod asyncs {
         for c in list {
             c.await.unwrap();
         }
-        r.close();
+        r.close().unwrap();
         assert_eq!(counter.load(Ordering::SeqCst), 10_usize);
     }
 
@@ -362,14 +362,14 @@ mod asyncs {
             let counter = counter.clone();
             drop(s.send(DropTester::new(counter, 1234)));
         }
-        r.close();
+        r.close().unwrap();
         assert_eq!(counter.load(Ordering::SeqCst), 10_usize);
     }
 
     #[tokio::test]
     async fn drop_test_send_to_closed() {
         let (s, r) = new(Some(10));
-        r.close();
+        r.close().unwrap();
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..10 {
             let counter = counter.clone();
