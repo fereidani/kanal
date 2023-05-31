@@ -237,20 +237,20 @@ macro_rules! shared_impl {
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
         /// // closes channel on both sides and has same effect as r.close();
-        /// s.close();
+        /// s.close().unwrap();
         /// assert_eq!(r.is_closed(),true);
         /// assert_eq!(s.is_closed(),true);
         /// ```
-        pub fn close(&self) -> bool {
+        pub fn close(&self) -> Result<(), CloseError> {
             let mut internal = acquire_internal(&self.internal);
             if internal.recv_count == 0 && internal.send_count == 0 {
-                return false;
+                return Err(CloseError());
             }
             internal.recv_count = 0;
             internal.send_count = 0;
             internal.terminate_signals();
             internal.queue.clear();
-            true
+            Ok(())
         }
         /// Returns whether the channel is closed on both side of send and
         /// receive or not.

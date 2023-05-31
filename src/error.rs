@@ -108,3 +108,13 @@ impl fmt::Display for OneshotReceiveError {
         fmt::Display::fmt("oneshot send side dropped", f)
     }
 }
+
+/// Error type for closing a channel when channel is already closed
+#[derive(Debug, PartialEq, Eq)]
+pub struct CloseError();
+impl std::error::Error for CloseError {}
+impl fmt::Display for CloseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt("channel is already closed", f)
+    }
+}
