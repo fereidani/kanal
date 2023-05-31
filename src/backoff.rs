@@ -4,7 +4,9 @@
 /// The main idea behind separating backoff into an independent module is that
 /// it makes it easier to test and compare different backoff solutions.
 use std::{
-    sync::atomic::{AtomicU32, AtomicU8, Ordering},
+    num::NonZeroUsize,
+    sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
+    thread::available_parallelism,
     time::Duration,
 };
 
@@ -89,6 +91,18 @@ pub fn randomize(d: usize) -> usize {
     d - (d >> 3) + random_u32() as usize % (d >> 2)
 }
 
+static PARALELLISM: AtomicUsize = AtomicUsize::new(0);
+
+#[inline(always)]
+pub fn get_parallelism() -> usize {
+    let mut p = PARALELLISM.load(Ordering::Relaxed);
+    if p == 0 {
+        p = usize::from(available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()));
+        PARALELLISM.store(p, Ordering::SeqCst);
+    }
+    p
+}
+
 /// Spins until the specified condition becomes true.
 /// This function uses a combination of spinning, yielding, and sleeping to
 /// reduce busy waiting and improve the efficiency of concurrent systems.
@@ -111,6 +125,17 @@ pub fn randomize(d: usize) -> usize {
 #[allow(clippy::reversed_empty_ranges)]
 #[inline(always)]
 pub fn spin_cond<F: Fn() -> bool>(cond: F) {
+    if get_parallelism() == 1 {
+        // For environments with limited resources, such as small Virtual Private
+        // Servers (VPS) or single-core systems, active spinning may lead to inefficient
+        // CPU usage without performance benefits. This is due to the fact that there's
+        // only one thread of execution, making it impossible for another thread to make
+        // progress during the spin wait period.
+        while !cond() {
+            yield_now_std();
+        }
+    }
+
     const NO_YIELD: usize = 1;
     const SPIN_YIELD: usize = 1;
     const OS_YIELD: usize = 0;

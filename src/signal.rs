@@ -1,4 +1,7 @@
-use crate::{backoff, pointer::KanalPtr};
+use crate::{
+    backoff::{self, get_parallelism},
+    pointer::KanalPtr,
+};
 use std::{
     cell::UnsafeCell,
     sync::atomic::{fence, AtomicU8, Ordering},
@@ -165,14 +168,16 @@ impl<T> Signal<T> {
 
     /// Waits for the signal event in sync mode with a timeout
     pub(crate) fn wait_timeout(&self, until: Instant) -> bool {
-        for _ in 0..32 {
-            let v = self.state.load(Ordering::Relaxed);
-            if v < LOCKED {
-                fence(Ordering::Acquire);
-                return v == UNLOCKED;
+        if get_parallelism() > 1 {
+            for _ in 0..32 {
+                let v = self.state.load(Ordering::Relaxed);
+                if v < LOCKED {
+                    fence(Ordering::Acquire);
+                    return v == UNLOCKED;
+                }
+                // randomize next entry with yield_now
+                backoff::yield_now();
             }
-            // randomize next entry with yield_now
-            backoff::yield_now();
         }
         //return self.v.load(Ordering::Acquire);
         while Instant::now() < until {
