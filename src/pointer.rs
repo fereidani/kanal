@@ -11,10 +11,12 @@ use std::{
 /// holds pointer to that data in another side stack, and copies memory from
 /// that pointer location
 /// 2. When data size T is equal or less than pointer size:
-/// serialize data itself in pointer address, with this action  KanalPtr
+/// serialize data itself in pointer address, with this action KanalPtr
 /// removes one unnecessary memory load operation and improves speed. This
 /// structure is unsafe. KanalPtr should be pinned to memory location or be a
-/// member of pinned structure to work correctly.
+/// member of pinned structure to work correctly. In particular, ZSTs should be
+/// treated carefully as their alignments can be larger than the alignment of
+/// pointers.
 pub(crate) struct KanalPtr<T>(UnsafeCell<MaybeUninit<*mut T>>);
 
 impl<T> Default for KanalPtr<T> {

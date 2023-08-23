@@ -173,6 +173,27 @@ fn spsc_delayed_send() {
 }
 
 #[test]
+fn spsc_overaligned_zst() {
+    #[repr(align(1024))]
+    struct Foo;
+
+    let (tx, rx) = new(0.into());
+    crossbeam::scope(|scope| {
+        scope.spawn(|_| {
+            for _i in 0..10 {
+                delay();
+                tx.send(Foo).unwrap();
+            }
+        });
+
+        for _ in 0..10 {
+            rx.recv().unwrap();
+        }
+    })
+    .unwrap();
+}
+
+#[test]
 fn integrity_u8() {
     integrity_test!(0u8, !0u8);
 }

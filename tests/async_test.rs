@@ -504,4 +504,22 @@ mod asyncs {
         assert_eq!(r.recv().await.unwrap(), 0);
         assert_eq!(r.recv().await.unwrap(), 1);
     }
+
+    #[tokio::test]
+    async fn spsc_overaligned_zst() {
+        #[repr(align(1024))]
+        struct Foo;
+
+        let (tx, rx) = new(Some(0));
+
+        tokio::spawn(async move {
+            for _i in 0..MESSAGES {
+                tx.send(Foo).await.unwrap();
+            }
+        });
+
+        for _ in 0..MESSAGES {
+            rx.recv().await.unwrap();
+        }
+    }
 }
