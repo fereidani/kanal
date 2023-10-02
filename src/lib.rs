@@ -43,6 +43,7 @@ let sync_sender=sender.clone_async();
 ```
 "##
 )]
+#[repr(C)]
 pub struct Sender<T> {
     internal: Internal<T>,
 }
@@ -58,6 +59,7 @@ pub struct Sender<T> {
 /// let sync_sender=sender.clone_sync();
 /// ```
 #[cfg(feature = "async")]
+#[repr(C)]
 pub struct AsyncSender<T> {
     internal: Internal<T>,
 }
@@ -1013,7 +1015,7 @@ let async_receiver=receiver.clone_async();
 ```
 "##
 )]
-
+#[repr(C)]
 pub struct Receiver<T> {
     internal: Internal<T>,
 }
@@ -1035,6 +1037,7 @@ impl<T> fmt::Debug for Receiver<T> {
 /// let sync_receiver=receiver.clone_sync();
 /// ```
 #[cfg(feature = "async")]
+#[repr(C)]
 pub struct AsyncReceiver<T> {
     internal: Internal<T>,
 }
