@@ -73,7 +73,7 @@ const FINISHED: *mut () = !0usize as *mut ();
 /// [`ActionResult`] translates state of compare_exchange off the AtomicPtr to
 /// more readable and easier to handle enum.
 enum ActionResult<T> {
-    /// Action was successfull
+    /// Action was successful
     Ok,
     /// State is racing, side can participate in race to win signal ptr
     Racing,
@@ -174,7 +174,7 @@ impl<T> OneshotInternal<T> {
     /// write to the signal as there will be multiple  mutable reference to
     /// signal, with this method channel resets state to racing if it's
     /// possible and tries to win the race again after updating the signal,
-    /// the logic is something similiar to the Mutex.
+    /// the logic is something similar to the Mutex.
     #[inline(always)]
     #[cfg(feature = "async")]
     fn try_reset(&self, own_ptr: *const Signal<T>) -> ActionResult<T> {
@@ -203,7 +203,7 @@ impl<T> OneshotInternal<T> {
     }
 }
 
-// Returns true if transfer was successfull.
+// Returns true if transfer was successful.
 #[inline(never)]
 fn try_drop_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
     let internal = unsafe { internal_ptr.as_ref() };
@@ -514,7 +514,7 @@ impl<T> OneshotAsyncSender<T> {
     /// sending object as `Poll::ready(Err(T))`.
     pub fn send(self, data: T) -> OneshotSendFuture<T> {
         let internal_ptr = self.internal_ptr;
-        // No need to worry about droping the internal pointer in self, future
+        // No need to worry about dropping the internal pointer in self, future
         // is the new owner of the pointer.
         forget(self);
         if size_of::<T>() > size_of::<*mut T>() {
@@ -545,7 +545,7 @@ impl<T> OneshotAsyncReceiver<T> {
     /// consumes the receive side.
     pub fn recv(self) -> OneshotReceiveFuture<T> {
         let internal_ptr = self.internal_ptr;
-        // No need to worry about droping the internal pointer in self, future
+        // No need to worry about dropping the internal pointer in self, future
         // is the new owner of the pointer.
         forget(self);
         OneshotReceiveFuture {
