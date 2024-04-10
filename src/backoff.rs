@@ -93,20 +93,20 @@ pub fn randomize(d: usize) -> usize {
 
 // Static atomic variable used to store the degree of parallelism.
 // Initialized to 0, meaning that the parallelism degree has not been computed yet.
-static PARALELLISM: AtomicUsize = AtomicUsize::new(0);
+static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
 
 // This function retrieves the available degree of parallelism.
-// If the degree of parallelism has not been computed yet, it computes and stores it in the PARALELLISM atomic variable.
+// If the degree of parallelism has not been computed yet, it computes and stores it in the PARALLELISM atomic variable.
 // The degree of parallelism typically corresponds to the number of processor cores that can execute threads concurrently.
 #[inline(always)]
 pub fn get_parallelism() -> usize {
-    let mut p = PARALELLISM.load(Ordering::Relaxed);
+    let mut p = PARALLELISM.load(Ordering::Relaxed);
     // If the parallelism degree has not been computed yet.
     if p == 0 {
         // Try to get the degree of parallelism from available_parallelism.
         // If it is not available, default to 1.
         p = usize::from(available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()));
-        PARALELLISM.store(p, Ordering::SeqCst);
+        PARALLELISM.store(p, Ordering::SeqCst);
     }
     // Return the computed degree of parallelism.
     p

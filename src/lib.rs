@@ -424,7 +424,7 @@ macro_rules! shared_send_impl {
         /// Tries sending to the channel without waiting on the waitlist or
         /// channel internal lock. It returns `Ok(true)` in case of a successful
         /// operation and `Ok(false)` for a failed one, or error in case that
-        /// channel is closed. This function will `panic` on successfull send
+        /// channel is closed. This function will `panic` on successful send
         /// attempt of `None` data. Do not use this function unless you know
         /// exactly what you are doing.
         ///
