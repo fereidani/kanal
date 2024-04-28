@@ -486,6 +486,11 @@ macro_rules! shared_send_impl {
         pub fn is_disconnected(&self) -> bool {
             acquire_internal(&self.internal).recv_count == 0
         }
+
+        /// downgrade to WeakSender
+        pub fn downgrade(&self) -> WeakSender<T> {
+            WeakSender { internal: self.internal.clone() }
+        }
     };
 }
 
@@ -623,6 +628,32 @@ macro_rules! shared_recv_impl {
             let internal = acquire_internal(&self.internal);
             internal.send_count == 0 && internal.queue.len() == 0
         }
+
+       
+        /// create Sender from Receiver
+        /// return None if Sender or Receiver is closed
+        pub fn sender_sync(&self) -> Option<Sender<T>> {
+            let mut internal = acquire_internal(&self.internal);
+            if internal.send_count > 0 && internal.recv_count > 0 {
+                internal.send_count += 1;
+                return Some(Sender { internal: self.internal.clone() });
+            } else {
+                None
+            }
+        }
+
+        /// create Sender from Receiver
+        /// return None if Sender or Receiver is closed
+        pub fn sender_async(&self) -> Option<AsyncSender<T>> {
+            let mut internal = acquire_internal(&self.internal);
+            if internal.send_count > 0 && internal.recv_count > 0 {
+                internal.send_count += 1;
+                return Some(AsyncSender { internal: self.internal.clone() });
+            } else {
+                None
+            }
+        }
+        
     };
 }
 
@@ -1354,6 +1385,9 @@ impl<T> AsyncReceiver<T> {
         unsafe { transmute(self) }
     }
 
+
+    
+
     shared_impl!();
 }
 
@@ -1362,9 +1396,12 @@ impl<T> Drop for Receiver<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count > 0 {
             internal.recv_count -= 1;
-            if internal.recv_count == 0 && internal.send_count != 0 {
-                internal.terminate_signals();
-            }
+            if internal.recv_count == 0 {
+                internal.queue.clear();
+                if internal.send_count != 0 {
+                    internal.terminate_signals();
+                }
+            } 
         }
     }
 }
@@ -1375,9 +1412,12 @@ impl<T> Drop for AsyncReceiver<T> {
         let mut internal = acquire_internal(&self.internal);
         if internal.recv_count > 0 {
             internal.recv_count -= 1;
-            if internal.recv_count == 0 && internal.send_count != 0 {
-                internal.terminate_signals();
-            }
+            if internal.recv_count == 0 {
+                internal.queue.clear();
+                if internal.send_count != 0 {
+                    internal.terminate_signals();
+                }
+            } 
         }
     }
 }
@@ -1552,4 +1592,46 @@ pub fn unbounded_async<T>() -> (AsyncSender<T>, AsyncReceiver<T>) {
         },
         AsyncReceiver { internal },
     )
+}
+
+/// 
+pub struct WeakSender<T> {
+    internal: Internal<T>,
+}
+
+impl<T> WeakSender<T> {
+    /// upgrade to Sender<T> 
+    pub fn upgrade_sync(&self) -> Option<Sender<T>> {
+        let mut internal = acquire_internal(&self.internal);
+        if internal.send_count > 0 {
+
+            internal.send_count += 1;
+            
+            Some(Sender { internal: self.internal.clone() })
+        } else {
+            None
+        }
+
+    }
+
+    /// upgrade to AsyncSender<T> 
+    #[cfg(feature = "async")]
+    pub fn upgrade_async(&self) -> Option<AsyncSender<T>> {
+        let mut internal = acquire_internal(&self.internal);
+        if internal.send_count > 0 {
+
+            internal.send_count += 1;
+            
+            Some(AsyncSender { internal: self.internal.clone() })
+        } else {
+            None
+        }
+    }
+    
+}
+
+impl<T> fmt::Debug for WeakSender<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "WeakSender {{ .. }}")
+    }
 }

@@ -390,6 +390,74 @@ fn drop_test_in_signal() {
     .unwrap();
 }
 
+
+#[test]
+#[should_panic]
+fn create_sender_from_receiver_panic() {
+    let (tx, rx) = new::<i32>(None);
+    drop(tx);
+    rx.sender_sync().unwrap();
+}
+
+#[test]
+fn create_sender_from_receiver_normal() {
+    let (tx, rx) = new::<i32>(None);
+
+    let sender = rx.sender_sync().unwrap();
+
+    sender.send(0).unwrap();
+    assert_eq!(rx.recv().unwrap(), 0);
+
+    drop(tx);
+}
+
+
+#[test]
+fn weak_sender_normal() {
+    let (tx, rx) = new::<i32>(None);
+    drop(rx);
+    let weak = tx.downgrade();
+
+    weak.upgrade_sync().unwrap();
+    
+}
+
+#[test]
+#[should_panic]
+fn weak_sender_panic() {
+    let (tx, rx) = new::<i32>(None);
+    drop(rx);
+    let weak = tx.downgrade();
+
+    drop(tx);
+    weak.upgrade_sync().unwrap();
+    
+}
+
+#[test]
+fn drop_all_elements() {
+    use std::sync::RwLock;
+    static NUMBER: RwLock<i32> = RwLock::new(0);
+    struct Message;
+    impl Drop for Message {
+        fn drop(&mut self) {
+            *NUMBER.write().unwrap() += 1;
+        }
+    }
+
+    let (sender, recver) = new(None);
+
+    sender.send(Message).unwrap();
+    sender.send(Message).unwrap();
+    sender.send(Message).unwrap();
+
+    assert_eq!(*NUMBER.read().unwrap(), 0);
+    drop(recver);
+
+    assert_eq!(*NUMBER.read().unwrap(), 3);
+}
+
+
 #[test]
 fn vec_test() {
     mpmc_dyn!(vec![1, 2, 3], Some(1));
