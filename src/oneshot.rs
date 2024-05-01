@@ -121,10 +121,7 @@ struct OneshotInternalPointer<T> {
 
 impl<T> Clone for OneshotInternalPointer<T> {
     fn clone(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            _phantom: PhantomData,
-        }
+        *self
     }
 }
 impl<T> Copy for OneshotInternalPointer<T> {}

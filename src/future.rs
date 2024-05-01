@@ -235,15 +235,13 @@ impl<'a, T> Drop for ReceiveFuture<'a, T> {
                 if self.sig.async_blocking_wait() {
                     if let Poll::Ready(success) = self.sig.poll() {
                         if success {
-                            let data = unsafe {
-                                self.read_local_data()
-                            };
+                            let data = unsafe { self.read_local_data() };
                             internal.queue.push_front(data);
                             return;
                         }
                     }
                     drop(internal);
-                    
+
                     // got ownership of data that is not going to be used ever again, so drop it
                     if needs_drop::<T>() {
                         // Safety: data is not moved it's safe to drop it

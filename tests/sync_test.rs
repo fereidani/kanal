@@ -390,7 +390,6 @@ fn drop_test_in_signal() {
     .unwrap();
 }
 
-
 #[test]
 #[should_panic]
 fn create_sender_from_receiver_panic() {
@@ -411,7 +410,6 @@ fn create_sender_from_receiver_normal() {
     drop(tx);
 }
 
-
 #[test]
 fn weak_sender_normal() {
     let (tx, rx) = new::<i32>(None);
@@ -419,7 +417,6 @@ fn weak_sender_normal() {
     let weak = tx.downgrade();
 
     weak.upgrade_sync().unwrap();
-    
 }
 
 #[test]
@@ -431,7 +428,6 @@ fn weak_sender_panic() {
 
     drop(tx);
     weak.upgrade_sync().unwrap();
-    
 }
 
 #[test]
@@ -456,7 +452,6 @@ fn drop_all_elements() {
 
     assert_eq!(*NUMBER.read().unwrap(), 3);
 }
-
 
 #[test]
 fn vec_test() {
