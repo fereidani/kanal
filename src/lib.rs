@@ -644,6 +644,7 @@ macro_rules! shared_recv_impl {
 
         /// create Sender from Receiver
         /// return None if Sender or Receiver is closed
+        #[cfg(feature = "async")]
         pub fn sender_async(&self) -> Option<AsyncSender<T>> {
             let mut internal = acquire_internal(&self.internal);
             if internal.send_count > 0 && internal.recv_count > 0 {
