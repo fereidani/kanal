@@ -246,6 +246,7 @@ fn try_drop_internal<T>(internal_ptr: OneshotInternalPointer<T>) -> bool {
 /// Note: sending a message in Kanal one-shot algorithm can be
 /// blocking/suspending if the sender reaches the `send` function before
 /// receiver calling the recv.
+#[repr(C)]
 pub struct OneshotSender<T> {
     internal_ptr: OneshotInternalPointer<T>,
 }
@@ -360,6 +361,7 @@ impl<T> OneshotSender<T> {
 /// achievable with [`Self::send`] which returns a future that should be polled
 /// until transfer is done.
 #[cfg(feature = "async")]
+#[repr(C)]
 pub struct OneshotAsyncSender<T> {
     internal_ptr: OneshotInternalPointer<T>,
 }
@@ -380,6 +382,7 @@ impl<T> Drop for OneshotAsyncSender<T> {
 /// receive a single message. It can be converted to async
 /// [`OneshotAsyncReceiver<T>`] by calling [`Self::to_async`]. Receiving a
 /// message is achievable with [`Self::recv`].
+#[repr(C)]
 pub struct OneshotReceiver<T> {
     internal_ptr: OneshotInternalPointer<T>,
 }
@@ -486,6 +489,7 @@ impl<T> OneshotReceiver<T> {
 /// achievable with [`Self::recv`] which returns a future that should be polled
 /// to receive the message.
 #[cfg(feature = "async")]
+#[repr(C)]
 pub struct OneshotAsyncReceiver<T> {
     internal_ptr: OneshotInternalPointer<T>,
 }
