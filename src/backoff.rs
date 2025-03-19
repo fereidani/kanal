@@ -3,12 +3,13 @@
 ///
 /// The main idea behind separating backoff into an independent module is that
 /// it makes it easier to test and compare different backoff solutions.
-use std::{
+use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
-    thread::available_parallelism,
     time::Duration,
 };
+
+use std::thread::available_parallelism;
 
 /// Puts the current thread to sleep for a specified duration.
 #[inline(always)]
@@ -92,12 +93,15 @@ pub fn randomize(d: usize) -> usize {
 }
 
 // Static atomic variable used to store the degree of parallelism.
-// Initialized to 0, meaning that the parallelism degree has not been computed yet.
+// Initialized to 0, meaning that the parallelism degree has not been computed
+// yet.
 static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
 
-// This function retrieves the available degree of parallelism.
-// If the degree of parallelism has not been computed yet, it computes and stores it in the PARALLELISM atomic variable.
-// The degree of parallelism typically corresponds to the number of processor cores that can execute threads concurrently.
+/// Retrieves the available degree of parallelism.
+/// If the degree of parallelism has not been computed yet, it computes and
+/// stores it in the PARALLELISM atomic variable. The degree of parallelism
+/// typically corresponds to the number of processor cores that can execute
+/// threads concurrently.
 #[inline(always)]
 pub fn get_parallelism() -> usize {
     let mut p = PARALLELISM.load(Ordering::Relaxed);

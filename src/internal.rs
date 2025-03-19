@@ -1,9 +1,10 @@
 #[cfg(not(feature = "std-mutex"))]
 use crate::mutex::{Mutex, MutexGuard};
 use crate::signal::{Signal, SignalTerminator};
+extern crate alloc;
+use alloc::{collections::VecDeque, sync::Arc};
 #[cfg(feature = "std-mutex")]
 use std::sync::{Mutex, MutexGuard};
-use std::{collections::VecDeque, sync::Arc};
 
 pub(crate) type Internal<T> = Arc<Mutex<ChannelInternal<T>>>;
 
@@ -61,11 +62,11 @@ impl<T> ChannelInternal<T> {
             // act like there is no limit
             abstract_capacity = usize::MAX;
         }
-
+        let wait_list_size = if capacity == 0 { 8 } else { 4 };
         let ret = Self {
             queue: VecDeque::with_capacity(capacity),
             recv_blocking: false,
-            wait_list: VecDeque::new(),
+            wait_list: VecDeque::with_capacity(wait_list_size),
             recv_count: 1,
             send_count: 1,
             capacity: abstract_capacity,

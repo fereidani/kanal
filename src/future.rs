@@ -4,14 +4,14 @@ use crate::{
     signal::Signal,
     AsyncReceiver, ReceiveError, SendError,
 };
-use futures_core::{FusedStream, Future, Stream};
-use std::{
+use core::{
     fmt::Debug,
     marker::PhantomPinned,
     mem::{needs_drop, size_of, MaybeUninit},
     pin::Pin,
     task::Poll,
 };
+use futures_core::{FusedStream, Future, Stream};
 
 #[repr(u8)]
 #[derive(PartialEq, Clone, Copy)]
@@ -26,25 +26,26 @@ impl FutureState {
     fn is_waiting(&self) -> bool {
         *self == FutureState::Waiting
     }
+
     #[inline(always)]
     fn is_done(&self) -> bool {
         *self == FutureState::Done
     }
 }
 
-/// Send future to send an object to the channel asynchronously
-/// It must be polled to perform send action
+/// SendFuture is a future for sending an object to a channel asynchronously.
+/// It must be polled to complete the send operation.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct SendFuture<'a, T> {
-    pub(crate) state: FutureState,
-    pub(crate) internal: &'a Internal<T>,
-    pub(crate) sig: Signal<T>,
-    pub(crate) data: MaybeUninit<T>,
-    pub(crate) _pinned: PhantomPinned,
+    state: FutureState,
+    internal: &'a Internal<T>,
+    sig: Signal<T>,
+    data: MaybeUninit<T>,
+    _pinned: PhantomPinned,
 }
 
 impl<'a, T> Debug for SendFuture<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "SendFuture {{ .. }}")
     }
 }
@@ -73,22 +74,41 @@ impl<'a, T> Drop for SendFuture<'a, T> {
 }
 
 impl<'a, T> SendFuture<'a, T> {
-    /// # Safety
-    /// it's only safe to call this function once and only if send operation
-    /// will finish after this call.
+    /// Creates a new SendFuture with the given internal channel and data.
+    #[inline(always)]
+    pub(crate) fn new(internal: &'a Internal<T>, data: T) -> Self {
+        if size_of::<T>() > size_of::<*mut T>() {
+            SendFuture {
+                state: FutureState::Zero,
+                internal: &internal,
+                sig: Signal::new_async(),
+                data: MaybeUninit::new(data),
+                _pinned: PhantomPinned,
+            }
+        } else {
+            SendFuture {
+                state: FutureState::Zero,
+                internal: &internal,
+                sig: Signal::new_async_ptr(KanalPtr::new_owned(data)),
+                data: MaybeUninit::uninit(),
+                _pinned: PhantomPinned,
+            }
+        }
+    }
+    /// Safety: it's only safe to call this function once and only if send
+    /// operation will finish after this call.
     #[inline(always)]
     unsafe fn read_local_data(&self) -> T {
         if size_of::<T>() > size_of::<*mut T>() {
             // if its smaller than register size, it does not need pointer setup as data
             // will be stored in register address object
-            std::ptr::read(self.data.as_ptr())
+            core::ptr::read(self.data.as_ptr())
         } else {
             self.sig.assume_init()
         }
     }
-    /// # Safety
-    /// it's only safe to call this function once and only if send operation
-    /// fails
+    /// Safety: it's only safe to call this function once and only if send
+    /// operation fails
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
         if size_of::<T>() > size_of::<*mut T>() {
@@ -103,7 +123,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
     type Output = Result<(), SendError>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         match this.state {
@@ -121,10 +141,11 @@ impl<'a, T> Future for SendFuture<'a, T> {
                             this.drop_local_data();
                         }
                     }
-                    if send_count == 0 {
-                        return Poll::Ready(Err(SendError::Closed));
-                    }
-                    return Poll::Ready(Err(SendError::ReceiveClosed));
+                    return Poll::Ready(Err(if send_count == 0 {
+                        SendError::Closed
+                    } else {
+                        SendError::ReceiveClosed
+                    }));
                 }
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
@@ -153,37 +174,32 @@ impl<'a, T> Future for SendFuture<'a, T> {
                     Poll::Pending
                 }
             }
-            FutureState::Waiting => {
-                // waker is same no need to update
-                // Safety: this.sig is pinned, sig is pinned too
-                let r = this.sig.poll();
-                match r {
-                    Poll::Ready(success) => {
-                        this.state = FutureState::Done;
-                        if success {
-                            Poll::Ready(Ok(()))
-                        } else {
-                            if needs_drop::<T>() {
-                                // the data failed to move, drop it locally
-                                // Safety: the data is not moved, we are sure that it is inited in
-                                // this point, it's safe to init drop it.
-                                unsafe { this.drop_local_data() };
+            FutureState::Waiting => match this.sig.poll() {
+                Poll::Ready(success) => {
+                    this.state = FutureState::Done;
+                    if success {
+                        Poll::Ready(Ok(()))
+                    } else {
+                        if needs_drop::<T>() {
+                            // the data failed to move, drop it locally
+                            // Safety: the data is not moved, we are sure that it is inited in
+                            // this point, it's safe to init drop it.
+                            unsafe {
+                                this.drop_local_data();
                             }
-                            Poll::Ready(Err(SendError::Closed))
                         }
+                        Poll::Ready(Err(SendError::Closed))
                     }
-                    Poll::Pending => {
-                        if !this.sig.will_wake(cx.waker()) {
-                            // Waker is changed and we need to update waker in the waiting list
-                            {
-                                let internal = acquire_internal(this.internal);
-                                if internal.send_signal_exists(&this.sig) {
-                                    // signal is not shared with other thread yet so it's safe to
-                                    // update waker locally
-                                    this.sig.register_waker(cx.waker());
-                                    return Poll::Pending;
-                                }
-                            }
+                }
+                Poll::Pending => {
+                    if !this.sig.will_wake(cx.waker()) {
+                        // Waker is changed and we need to update waker in the waiting list
+                        if acquire_internal(this.internal).send_signal_exists(&this.sig) {
+                            // signal is not shared with other thread yet so it's safe to
+                            // update waker locally
+                            // this.sig.register_waker(cx.waker());
+                            Poll::Pending
+                        } else {
                             // signal is already shared, and data will be available shortly, so wait
                             // synchronously and return the result note:
                             // it's not possible safely to update waker after the signal is shared,
@@ -191,40 +207,42 @@ impl<'a, T> Future for SendFuture<'a, T> {
                             //   we can wait synchronously and receive it.
                             this.state = FutureState::Done;
                             if this.sig.async_blocking_wait() {
-                                return Poll::Ready(Ok(()));
-                            }
-                            // the data failed to move, drop it locally
-                            // Safety: the data is not moved, we are sure that it is inited in this
-                            // point, it's safe to init drop it.
-                            if needs_drop::<T>() {
-                                unsafe {
-                                    this.drop_local_data();
+                                Poll::Ready(Ok(()))
+                            } else {
+                                // the data failed to move, drop it locally
+                                // Safety: the data is not moved, we are sure that it is inited in
+                                // this point, it's safe to init
+                                // drop it.
+                                if needs_drop::<T>() {
+                                    unsafe {
+                                        this.drop_local_data();
+                                    }
                                 }
+                                Poll::Ready(Err(SendError::Closed))
                             }
-                            return Poll::Ready(Err(SendError::Closed));
                         }
+                    } else {
                         Poll::Pending
                     }
                 }
-            }
-            _ => {
-                panic!("polled after result is already returned")
-            }
+            },
+            _ => panic!("polled after result is already returned"),
         }
     }
 }
 
-/// Receive future to receive an object from the channel asynchronously
-/// It must be polled to perform receive action
+/// ReceiveFuture is a future for receiving an object from a channel
+/// asynchronously. It must be polled to complete the receive operation.
 #[must_use = "futures do nothing unless you .await or poll them"]
 pub struct ReceiveFuture<'a, T> {
     state: FutureState,
+    is_stream: bool,
     internal: &'a Internal<T>,
     sig: Signal<T>,
     data: MaybeUninit<T>,
-    is_stream: bool,
     _pinned: PhantomPinned,
 }
+
 impl<'a, T> Drop for ReceiveFuture<'a, T> {
     fn drop(&mut self) {
         if self.state.is_waiting() {
@@ -246,7 +264,7 @@ impl<'a, T> Drop for ReceiveFuture<'a, T> {
 }
 
 impl<'a, T> Debug for ReceiveFuture<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "ReceiveFuture {{ .. }}")
     }
 }
@@ -257,17 +275,18 @@ impl<'a, T> ReceiveFuture<'a, T> {
         if size_of::<T>() > size_of::<*mut T>() {
             // if T is smaller than register size, it does not need pointer setup as data
             // will be stored in register address object
-            std::ptr::read(self.data.as_ptr())
+            core::ptr::read(self.data.as_ptr())
         } else {
             self.sig.assume_init()
         }
     }
+
     #[inline(always)]
     unsafe fn drop_local_data(&mut self) {
         if size_of::<T>() > size_of::<*mut T>() {
-            self.data.assume_init_drop()
+            self.data.assume_init_drop();
         } else {
-            self.sig.load_and_drop()
+            self.sig.load_and_drop();
         }
     }
 
@@ -288,8 +307,9 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
     type Output = Result<T, ReceiveError>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
+
         loop {
             return match this.state {
                 FutureState::Zero => {
@@ -309,7 +329,7 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                     } else if let Some(t) = internal.next_send() {
                         drop(internal);
                         this.state = FutureState::Done;
-                        unsafe { Poll::Ready(Ok(t.recv())) }
+                        Poll::Ready(Ok(unsafe { t.recv() }))
                     } else {
                         if internal.send_count == 0 {
                             this.state = FutureState::Done;
@@ -329,32 +349,25 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                         Poll::Pending
                     }
                 }
-                FutureState::Waiting => {
-                    // waker is same no need to update
-                    // Safety: this.sig is pinned, sig is pinned too
-                    let r = this.sig.poll();
-                    match r {
-                        Poll::Ready(success) => {
-                            this.state = FutureState::Done;
-                            if success {
-                                Poll::Ready(Ok(unsafe { this.read_local_data() }))
-                            } else {
-                                Poll::Ready(Err(ReceiveError::Closed))
-                            }
+                FutureState::Waiting => match this.sig.poll() {
+                    Poll::Ready(success) => {
+                        this.state = FutureState::Done;
+                        if success {
+                            Poll::Ready(Ok(unsafe { this.read_local_data() }))
+                        } else {
+                            Poll::Ready(Err(ReceiveError::Closed))
                         }
-                        Poll::Pending => {
-                            if !this.sig.will_wake(cx.waker()) {
-                                // the Waker is changed and we need to update waker in the waiting
-                                // list
-                                {
-                                    let internal = acquire_internal(this.internal);
-                                    if internal.recv_signal_exists(&this.sig) {
-                                        // signal is not shared with other thread yet so it's safe
-                                        // to update waker locally
-                                        this.sig.register_waker(cx.waker());
-                                        return Poll::Pending;
-                                    }
-                                }
+                    }
+                    Poll::Pending => {
+                        if !this.sig.will_wake(cx.waker()) {
+                            // the Waker is changed and we need to update waker in the waiting
+                            // list
+                            if acquire_internal(this.internal).recv_signal_exists(&this.sig) {
+                                // signal is not shared with other thread yet so it's safe
+                                // to update waker locally
+                                this.sig.register_waker(cx.waker());
+                                Poll::Pending
+                            } else {
                                 // the signal is already shared, and data will be available shortly,
                                 // so wait synchronously and return the result
                                 // note: it's not possible safely to update waker after the signal
@@ -362,14 +375,16 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
                                 //   we can wait synchronously and receive it.
                                 this.state = FutureState::Done;
                                 if this.sig.async_blocking_wait() {
-                                    return Poll::Ready(Ok(unsafe { this.read_local_data() }));
+                                    Poll::Ready(Ok(unsafe { this.read_local_data() }))
+                                } else {
+                                    Poll::Ready(Err(ReceiveError::Closed))
                                 }
-                                return Poll::Ready(Err(ReceiveError::Closed));
                             }
+                        } else {
                             Poll::Pending
                         }
                     }
-                }
+                },
                 _ => {
                     if this.is_stream {
                         this.state = FutureState::Zero;
@@ -382,14 +397,16 @@ impl<'a, T> Future for ReceiveFuture<'a, T> {
     }
 }
 
-/// Receive stream
+/// ReceiveStream is a stream for receiving objects from a channel
+/// asynchronously.
 pub struct ReceiveStream<'a, T: 'a> {
     future: Pin<Box<ReceiveFuture<'a, T>>>,
     terminated: bool,
     receiver: &'a AsyncReceiver<T>,
 }
+
 impl<'a, T> Debug for ReceiveStream<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "ReceiveStream {{ .. }}")
     }
 }
@@ -399,7 +416,7 @@ impl<'a, T> Stream for ReceiveStream<'a, T> {
 
     fn poll_next(
         mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if self.terminated {
             return Poll::Ready(None);

@@ -2,17 +2,16 @@ use crate::{
     backoff::{self, get_parallelism},
     pointer::KanalPtr,
 };
-use std::{
+use core::{
     cell::UnsafeCell,
     sync::atomic::{fence, AtomicU8, Ordering},
-    thread::Thread,
-    time::Instant,
 };
 #[cfg(feature = "async")]
-use std::{
+use core::{
     task::{Poll, Waker},
     time::Duration,
 };
+use std::{thread::Thread, time::Instant};
 
 const UNLOCKED: u8 = 0;
 const TERMINATED: u8 = 1;
@@ -56,11 +55,7 @@ impl<T> Signal<T> {
         let v = self.state.load(Ordering::Relaxed);
         if v < LOCKED {
             fence(Ordering::Acquire);
-            if v == UNLOCKED {
-                Poll::Ready(true)
-            } else {
-                Poll::Ready(false)
-            }
+            Poll::Ready(v == UNLOCKED)
         } else {
             Poll::Pending
         }
@@ -88,7 +83,6 @@ impl<T> Signal<T> {
     }
 
     /// Waits for finishing async signal for a short time
-    #[inline(always)]
     #[cfg(feature = "async")]
     pub(crate) fn async_blocking_wait(&self) -> bool {
         let v = self.state.load(Ordering::Relaxed);
@@ -261,6 +255,7 @@ impl<T> Signal<T> {
     /// Sends object to receive signal by coping the pointer
     /// Safety: it's only safe to be called only once on the receive signals
     /// that are not terminated
+    #[allow(unused)]
     pub(crate) unsafe fn send_copy(this: *const Self, d: *const T) {
         (*this).ptr.copy(d);
         Self::wake(this, UNLOCKED);
@@ -308,6 +303,7 @@ impl<T> SignalTerminator<T> {
     pub(crate) unsafe fn send(self, data: T) {
         Signal::send(self.0, data)
     }
+    #[allow(unused)]
     pub(crate) unsafe fn send_copy(self, data: *const T) {
         Signal::send_copy(self.0, data)
     }

@@ -1,7 +1,6 @@
-use std::{
+use core::{
     cell::UnsafeCell,
-    mem::MaybeUninit,
-    mem::{forget, size_of, zeroed},
+    mem::{forget, size_of, zeroed, MaybeUninit},
     ptr,
 };
 
@@ -21,7 +20,7 @@ pub(crate) struct KanalPtr<T>(UnsafeCell<MaybeUninit<*mut T>>);
 
 impl<T> Default for KanalPtr<T> {
     fn default() -> Self {
-        Self(MaybeUninit::uninit().into())
+        Self(UnsafeCell::new(MaybeUninit::uninit()))
     }
 }
 
@@ -32,10 +31,9 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) fn new_from(addr: *mut T) -> Self {
         if size_of::<T>() > size_of::<*mut T>() {
-            Self(MaybeUninit::new(addr).into())
+            Self(UnsafeCell::new(MaybeUninit::new(addr)))
         } else {
-            // Safety: addr is valid memory object
-            Self(unsafe { store_as_kanal_ptr(addr).into() })
+            Self(UnsafeCell::new(unsafe { store_as_kanal_ptr(addr) }))
         }
     }
     /// Creates a KanalPtr from owned object, receiver or creator should take
@@ -46,8 +44,7 @@ impl<T> KanalPtr<T> {
         if size_of::<T>() > size_of::<*mut T>() {
             unreachable!("bug: data can't be stored when size of T is bigger than pointer size");
         } else {
-            // Safety: d is valid memory object
-            let ret = Self(unsafe { store_as_kanal_ptr(&d).into() });
+            let ret = Self(UnsafeCell::new(unsafe { store_as_kanal_ptr(&d) }));
             forget(d);
             ret
         }
@@ -57,9 +54,9 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) fn new_write_address_ptr(addr: *mut T) -> Self {
         if size_of::<T>() > size_of::<*mut T>() {
-            Self(MaybeUninit::new(addr).into())
+            Self(UnsafeCell::new(MaybeUninit::new(addr)))
         } else {
-            Self(MaybeUninit::uninit().into())
+            Self(UnsafeCell::new(MaybeUninit::uninit()))
         }
     }
     /// Creates a KanalPtr without checking or transforming the pointer to
@@ -68,20 +65,16 @@ impl<T> KanalPtr<T> {
     #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) fn new_unchecked(addr: *mut T) -> Self {
-        Self(MaybeUninit::new(addr).into())
+        Self(UnsafeCell::new(MaybeUninit::new(addr)))
     }
     /// Reads data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
     pub(crate) unsafe fn read(&self) -> T {
         if size_of::<T>() == 0 {
-            return zeroed();
-        }
-        if size_of::<T>() > size_of::<*mut T>() {
-            // Data is in actual pointer location
+            zeroed()
+        } else if size_of::<T>() > size_of::<*mut T>() {
             ptr::read((*self.0.get()).assume_init())
         } else {
-            // Data is serialized as pointer location, load it from pointer
-            // value instead
             ptr::read((*self.0.get()).as_ptr() as *const T)
         }
     }
@@ -89,13 +82,9 @@ impl<T> KanalPtr<T> {
     #[inline(always)]
     pub(crate) unsafe fn write(&self, d: T) {
         if size_of::<T>() > size_of::<*mut T>() {
-            // Data can't be stored as pointer value, move it to pointer
-            // location
             ptr::write((*self.0.get()).assume_init(), d);
         } else {
             if size_of::<T>() > 0 {
-                // Data size is less or equal to pointer size, serialize data as
-                // pointer address
                 *self.0.get() = store_as_kanal_ptr(&d);
             }
             forget(d);
@@ -103,6 +92,7 @@ impl<T> KanalPtr<T> {
     }
     /// Writes data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
+    #[allow(unused)]
     pub(crate) unsafe fn copy(&self, d: *const T) {
         if size_of::<T>() > size_of::<*mut T>() {
             // Data can't be stored as pointer value, move it to pointer
@@ -121,9 +111,8 @@ impl<T> KanalPtr<T> {
 #[inline(always)]
 unsafe fn store_as_kanal_ptr<T>(ptr: *const T) -> MaybeUninit<*mut T> {
     let mut ret = MaybeUninit::uninit();
-    if size_of::<T>() == 0 {
-        return ret;
+    if size_of::<T>() > 0 {
+        ptr::copy_nonoverlapping(ptr, ret.as_mut_ptr() as *mut T, 1);
     }
-    ptr::copy_nonoverlapping(ptr, ret.as_mut_ptr() as *mut T, 1);
     ret
 }

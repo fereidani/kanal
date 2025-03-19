@@ -10,24 +10,24 @@ pub(crate) mod pointer;
 mod error;
 #[cfg(feature = "async")]
 mod future;
-mod oneshot;
 mod signal;
 
 pub use error::*;
 #[cfg(feature = "async")]
 pub use future::*;
-pub use oneshot::*;
+
+#[cfg(feature = "async")]
+use core::mem::transmute;
+use core::{
+    fmt,
+    mem::{needs_drop, size_of, MaybeUninit},
+    time::Duration,
+};
+use std::time::Instant;
 
 use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
 use pointer::KanalPtr;
 use signal::*;
-use std::{
-    fmt,
-    mem::{needs_drop, size_of, MaybeUninit},
-    time::{Duration, Instant},
-};
-#[cfg(feature = "async")]
-use std::{marker::PhantomPinned, mem::transmute};
 
 /// Sending side of the channel with sync API. It's possible to convert it to
 /// async [`AsyncSender`] with `as_async`, `to_async` or `clone_async` based on
@@ -95,6 +95,7 @@ impl<T> Clone for Sender<T> {
         if internal.send_count > 0 {
             internal.send_count += 1;
         }
+        drop(internal);
         Self {
             internal: self.internal.clone(),
         }
@@ -114,6 +115,7 @@ impl<T> Clone for AsyncSender<T> {
         if internal.send_count > 0 {
             internal.send_count += 1;
         }
+        drop(internal);
         Self {
             internal: self.internal.clone(),
         }
@@ -840,6 +842,7 @@ impl<T> Sender<T> {
         if internal.send_count > 0 {
             internal.send_count += 1;
         }
+        drop(internal);
         AsyncSender::<T> {
             internal: self.internal.clone(),
         }
@@ -908,23 +911,7 @@ impl<T> AsyncSender<T> {
     /// ```
     #[inline(always)]
     pub fn send(&'_ self, data: T) -> SendFuture<'_, T> {
-        if size_of::<T>() > size_of::<*mut T>() {
-            SendFuture {
-                state: FutureState::Zero,
-                internal: &self.internal,
-                sig: Signal::new_async(),
-                data: MaybeUninit::new(data),
-                _pinned: PhantomPinned,
-            }
-        } else {
-            SendFuture {
-                state: FutureState::Zero,
-                internal: &self.internal,
-                sig: Signal::new_async_ptr(KanalPtr::new_owned(data)),
-                data: MaybeUninit::uninit(),
-                _pinned: PhantomPinned,
-            }
-        }
+        SendFuture::new(&self.internal, data)
     }
     shared_send_impl!();
     /// Clones [`AsyncSender`] as [`Sender`] with sync api of it.
@@ -946,6 +933,7 @@ impl<T> AsyncSender<T> {
         if internal.send_count > 0 {
             internal.send_count += 1;
         }
+        drop(internal);
         Sender::<T> {
             internal: self.internal.clone(),
         }
@@ -1156,6 +1144,7 @@ impl<T> Receiver<T> {
         if internal.recv_count > 0 {
             internal.recv_count += 1;
         }
+        drop(internal);
         AsyncReceiver::<T> {
             internal: self.internal.clone(),
         }
@@ -1228,6 +1217,22 @@ impl<T> Iterator for Receiver<T> {
 impl<T> AsyncReceiver<T> {
     /// Returns a [`ReceiveFuture`] to receive data from the channel
     /// asynchronously.
+    ///
+    /// # Cancellation and Polling Considerations
+    ///
+    /// Due to current limitations in Rust's handling of future cancellation, if a
+    /// `ReceiveFuture` is dropped exactly at the time when new data is written to the
+    /// channel, it may result in the loss of the received value. This behavior although safe stems from
+    /// the fact that Rust does not provide a built-in, safe mechanism for cancelling futures.
+    ///
+    /// Additionally, it is important to note that constructs such as `tokio::select!` are not correct to use
+    /// with kanal async channels. Kanal's design does not rely on the conventional `poll` mechanism to
+    /// read messages. Because of its internal optimizations, the future may complete without receiving the
+    /// final poll, which prevents proper handling of the message.
+    ///
+    /// As a result, once the `ReceiveFuture` is polled for the first time (which registers the request to
+    /// receive data), the programmer must commit to completing the polling process. This ensures that
+    /// messages are correctly delivered and avoids potential race conditions associated with cancellation.
     ///
     /// # Examples
     ///
@@ -1303,6 +1308,7 @@ impl<T> AsyncReceiver<T> {
         if internal.recv_count > 0 {
             internal.recv_count += 1;
         }
+        drop(internal);
         Receiver::<T> {
             internal: self.internal.clone(),
         }
@@ -1388,6 +1394,7 @@ impl<T> Clone for Receiver<T> {
         if internal.recv_count > 0 {
             internal.recv_count += 1;
         }
+        drop(internal);
         Self {
             internal: self.internal.clone(),
         }
@@ -1401,6 +1408,7 @@ impl<T> Clone for AsyncReceiver<T> {
         if internal.recv_count > 0 {
             internal.recv_count += 1;
         }
+        drop(internal);
         Self {
             internal: self.internal.clone(),
         }
@@ -1480,13 +1488,18 @@ pub fn bounded_async<T>(size: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
     )
 }
 
-const UNBOUNDED_STARTING_SIZE: usize = 2048;
+const UNBOUNDED_STARTING_SIZE: usize = 32;
 
 /// Creates a new sync unbounded channel, and returns [`Sender`] and
 /// [`Receiver`] of the channel for type T, you can get access to async API
 /// of [`AsyncSender`] and [`AsyncReceiver`] with `to_sync`, `as_async` or
 /// `clone_sync` based on your requirements, by calling them on sender or
 /// receiver.
+///
+/// # Warning
+/// This unbounded channel does not shrink its queue. As a result, if the receive side is
+/// exhausted or delayed, the internal queue may grow substantially. This behavior is intentional and considered as a warmup phase.
+/// If such growth is undesirable, consider using a bounded channel with an appropriate queue size.
 ///
 /// # Examples
 ///
@@ -1525,6 +1538,11 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 /// [`AsyncReceiver`] of the channel for type T, you can get access to sync API
 /// of [`Sender`] and [`Receiver`] with `to_sync`, `as_async` or `clone_sync`
 /// based on your requirements, by calling them on async sender or receiver.
+///
+/// # Warning
+/// This unbounded channel does not shrink its queue. As a result, if the receive side is
+/// exhausted or delayed, the internal queue may grow substantially. This behavior is intentional and considered as a warmup phase.
+/// If such growth is undesirable, consider using a bounded channel with an appropriate queue size.
 ///
 /// # Examples
 ///

@@ -1,5 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
 use lock_api::{GuardSend, RawMutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::backoff::*;
 pub struct RawMutexLock {
