@@ -113,7 +113,7 @@ Machine: `AMD Ryzen 9 9950X 16-Core Processor`<br />
 Rust: `rustc 1.85.1 (4eb161250 2025-03-15)`<br />
 Go: `go version go1.24.1 linux/amd64`<br />
 OS (`uname -a`): `Linux 6.11.0-19-generic #19~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon Feb 17 11:51:52 UTC 2 x86_64`<br />
-Date: Jan 25, 2023
+Date: Mar 19, 2025
 
 [Benchmark codes](https://github.com/fereidani/rust-channel-benchmarks)
 
