@@ -1222,8 +1222,8 @@ impl<T> AsyncReceiver<T> {
     ///
     /// Due to current limitations in Rust's handling of future cancellation, if a
     /// `ReceiveFuture` is dropped exactly at the time when new data is written to the
-    /// channel, it may result in the loss of the received value. This behavior although safe stems from
-    /// the fact that Rust does not provide a built-in, safe mechanism for cancelling futures.
+    /// channel, it may result in the loss of the received value. This behavior although memory-safe stems from
+    /// the fact that Rust does not provide a built-in, correct mechanism for cancelling futures.
     ///
     /// Additionally, it is important to note that constructs such as `tokio::select!` are not correct to use
     /// with kanal async channels. Kanal's design does not rely on the conventional `poll` mechanism to
