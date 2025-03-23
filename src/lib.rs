@@ -1288,10 +1288,7 @@ impl<T> Iterator for Receiver<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.recv() {
-            Ok(d) => Some(d),
-            Err(_) => None,
-        }
+        self.recv().ok()
     }
 }
 
