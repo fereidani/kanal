@@ -14,7 +14,7 @@ jobs:
           - stable
           - nightly
 
-    name: ${{ matrix.version }} - x86_64-apple-darwin
+    name: ${{ matrix.version }} - aarch64-apple-darwin
     runs-on: macOS-latest
 
     steps:
@@ -22,7 +22,7 @@ jobs:
       - name: Install ${{ matrix.version }}
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ matrix.version }}-x86_64-apple-darwin
+          toolchain: ${{ matrix.version }}-aarch64-apple-darwin
           profile: minimal
           components: rustfmt
           override: true
@@ -36,13 +36,13 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/.cargo/registry
-          key: ${{ matrix.version }}-x86_64-apple-darwin-cargo-registry-trimmed-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.version }}-aarch64-apple-darwin-cargo-registry-trimmed-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo index
         uses: actions/cache@v3
         with:
           path: ~/.cargo/git
-          key: ${{ matrix.version }}-x86_64-apple-darwin-cargo-index-trimmed-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.version }}-aarch64-apple-darwin-cargo-index-trimmed-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
         uses: actions-rs/cargo@v1
