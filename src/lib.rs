@@ -592,6 +592,87 @@ macro_rules! shared_recv_impl {
             Ok(None)
         }
 
+        /// Drains all available messages from the channel into the provided vector and returns the number of received messages.
+        ///
+        /// This function retrieves all immediately available elements from the channel without blocking. It empties the channel's
+        /// internal queue and collects values from any waiting senders, appending them to the provided vector.
+        ///
+        /// # Key Characteristics
+        /// - Non-blocking: Only processes messages that are readily available
+        /// - Returns immediately with whatever messages are present
+        /// - Returns a count of received messages, which may be 0 if no messages are available
+        ///
+        /// # Usage Notes
+        /// - Check if the returned count is 0 to avoid busy-waiting in a loop
+        /// - For blocking behavior, use `recv()` when count is 0
+        /// - Reuse the same vector across calls to minimize memory allocations
+        /// - Clear the vector with `vec.clear()` between uses
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # use std::thread::spawn;
+        /// # let (s, r) = kanal::bounded(1000);
+        /// # let t=spawn(move || {
+        /// #   for i in 0..1000 {
+        /// #     s.send(i)?;
+        /// #   }
+        /// #   anyhow::Ok(())
+        /// # });
+        ///
+        /// let mut buf = Vec::with_capacity(1000);
+        /// loop {
+        ///     if let Ok(count) = r.drain_into(&mut buf) {
+        ///         if count == 0 {
+        ///            // count is 0, to avoid busy-wait using recv for
+        ///            // the first next message
+        ///            if let Ok(v) = r.recv() {
+        ///               buf.push(v);
+        ///            } else {
+        ///              break;
+        ///            }
+        ///         }
+        ///         // use buffer
+        ///         buf.iter().for_each(|v| println!("{}",v));
+        ///     }else{
+        ///         println!("Channel closed");
+        ///         break;
+        ///     }
+        ///     buf.clear();
+        /// }
+        /// # t.join();
+        /// # anyhow::Ok(())
+        /// ```
+        pub fn drain_into(&self, vec: &mut Vec<T>) -> Result<usize, ReceiveError> {
+            let mut count = 0;
+            let vec_initial_length = vec.len();
+            let remaining_cap = vec.capacity() - vec_initial_length;
+            let mut internal = acquire_internal(&self.internal);
+            if internal.recv_count == 0 {
+                return Err(ReceiveError::Closed);
+            }
+            let required_cap = internal.queue.len() + {
+                if internal.recv_blocking {
+                    0
+                } else {
+                    internal.wait_list.len()
+                }
+            };
+            if required_cap > remaining_cap {
+                vec.reserve(vec_initial_length + required_cap - remaining_cap);
+            }
+            while let Some(v) = internal.queue.pop_front() {
+                vec.push(v);
+                count += 1;
+            }
+            while let Some(p) = internal.next_send() {
+                // Safety: it's safe to receive from owned signal once
+                unsafe { vec.push(p.recv()) }
+                count += 1;
+            }
+            Ok(count)
+        }
+
         /// Returns, whether the send side of the channel, is closed or not.
         ///
         /// # Examples
@@ -1136,6 +1217,7 @@ impl<T> Receiver<T> {
         }
         // if the queue is not empty send the data
     }
+
     shared_recv_impl!();
     #[cfg(feature = "async")]
     /// Clones receiver as the async version of it

@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    thread,
     time::Duration,
 };
 
@@ -280,6 +281,40 @@ fn recv_from_half_closed_queue() {
     drop(tx);
     // it's ok to receive data from queue of half closed channel
     assert_eq!(rx.recv().unwrap(), Box::new(1));
+}
+
+#[test]
+fn drain_into_test() {
+    const TEST_LENGTH: usize = 1000;
+    let (tx, rx) = new(Some(TEST_LENGTH));
+    for i in 0..TEST_LENGTH {
+        tx.send(Box::new(i)).unwrap();
+    }
+    let mut vec = Vec::new();
+    rx.drain_into(&mut vec).unwrap();
+    assert_eq!(vec.len(), TEST_LENGTH);
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(**v, i);
+    }
+}
+
+#[test]
+fn drain_into_test_zero_sized() {
+    const TEST_LENGTH: usize = 100;
+    let (tx, rx) = new(None);
+    for _ in 0..TEST_LENGTH {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            tx.send(0xff).unwrap();
+        });
+    }
+    std::thread::sleep(Duration::from_millis(1000));
+    let mut vec = Vec::new();
+    rx.drain_into(&mut vec).unwrap();
+    assert_eq!(vec.len(), TEST_LENGTH);
+    for v in vec.iter() {
+        assert_eq!(*v, 0xff);
+    }
 }
 
 #[test]
