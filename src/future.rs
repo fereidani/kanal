@@ -44,13 +44,13 @@ pub struct SendFuture<'a, T> {
     _pinned: PhantomPinned,
 }
 
-impl<'a, T> Debug for SendFuture<'a, T> {
+impl<T> Debug for SendFuture<'_, T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "SendFuture {{ .. }}")
     }
 }
 
-impl<'a, T> Drop for SendFuture<'a, T> {
+impl<T> Drop for SendFuture<'_, T> {
     fn drop(&mut self) {
         if !self.state.is_done() {
             if self.state.is_waiting()
@@ -80,7 +80,7 @@ impl<'a, T> SendFuture<'a, T> {
         if size_of::<T>() > size_of::<*mut T>() {
             SendFuture {
                 state: FutureState::Zero,
-                internal: &internal,
+                internal,
                 sig: Signal::new_async(),
                 data: MaybeUninit::new(data),
                 _pinned: PhantomPinned,
@@ -88,7 +88,7 @@ impl<'a, T> SendFuture<'a, T> {
         } else {
             SendFuture {
                 state: FutureState::Zero,
-                internal: &internal,
+                internal,
                 sig: Signal::new_async_ptr(KanalPtr::new_owned(data)),
                 data: MaybeUninit::uninit(),
                 _pinned: PhantomPinned,
@@ -119,7 +119,7 @@ impl<'a, T> SendFuture<'a, T> {
     }
 }
 
-impl<'a, T> Future for SendFuture<'a, T> {
+impl<T> Future for SendFuture<'_, T> {
     type Output = Result<(), SendError>;
 
     #[inline(always)]
@@ -243,7 +243,7 @@ pub struct ReceiveFuture<'a, T> {
     _pinned: PhantomPinned,
 }
 
-impl<'a, T> Drop for ReceiveFuture<'a, T> {
+impl<T> Drop for ReceiveFuture<'_, T> {
     fn drop(&mut self) {
         if self.state.is_waiting() {
             // try to cancel recv signal
@@ -263,7 +263,7 @@ impl<'a, T> Drop for ReceiveFuture<'a, T> {
     }
 }
 
-impl<'a, T> Debug for ReceiveFuture<'a, T> {
+impl<T> Debug for ReceiveFuture<'_, T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "ReceiveFuture {{ .. }}")
     }
@@ -303,7 +303,7 @@ impl<'a, T> ReceiveFuture<'a, T> {
     }
 }
 
-impl<'a, T> Future for ReceiveFuture<'a, T> {
+impl<T> Future for ReceiveFuture<'_, T> {
     type Output = Result<T, ReceiveError>;
 
     #[inline(always)]
@@ -405,13 +405,13 @@ pub struct ReceiveStream<'a, T: 'a> {
     receiver: &'a AsyncReceiver<T>,
 }
 
-impl<'a, T> Debug for ReceiveStream<'a, T> {
+impl<T> Debug for ReceiveStream<'_, T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "ReceiveStream {{ .. }}")
     }
 }
 
-impl<'a, T> Stream for ReceiveStream<'a, T> {
+impl<T> Stream for ReceiveStream<'_, T> {
     type Item = T;
 
     fn poll_next(
@@ -435,7 +435,7 @@ impl<'a, T> Stream for ReceiveStream<'a, T> {
     }
 }
 
-impl<'a, T> FusedStream for ReceiveStream<'a, T> {
+impl<T> FusedStream for ReceiveStream<'_, T> {
     fn is_terminated(&self) -> bool {
         self.receiver.is_terminated()
     }
