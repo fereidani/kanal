@@ -6,10 +6,14 @@ use core::{
 
 /// Kanal Pointer is a structure to move data efficiently between sync and async
 /// context. This mod transfer data with two different ways between threads:
+///
 /// 1. When data size T is bigger than pointer size:
+///
 /// holds pointer to that data in another side stack, and copies memory from
-/// that pointer location
+/// that pointer location.
+///
 /// 2. When data size T is equal or less than pointer size:
+///
 /// serialize data itself in pointer address, with this action KanalPtr
 /// removes one unnecessary memory load operation and improves speed. This
 /// structure is unsafe. KanalPtr should be pinned to memory location or be a
