@@ -594,19 +594,14 @@ macro_rules! shared_recv_impl {
 
         /// Drains all available messages from the channel into the provided vector and returns the number of received messages.
         ///
-        /// This function retrieves all immediately available elements from the channel without blocking. It empties the channel's
-        /// internal queue and collects values from any waiting senders, appending them to the provided vector.
+        /// The function is designed to be non-blocking, meaning it only processes messages that are readily available and returns
+        /// immediately with whatever messages are present. It provides a count of received messages, which could be zero if no
+        /// messages are available at the time of the call.
         ///
-        /// # Key Characteristics
-        /// - Non-blocking: Only processes messages that are readily available
-        /// - Returns immediately with whatever messages are present
-        /// - Returns a count of received messages, which may be 0 if no messages are available
-        ///
-        /// # Usage Notes
-        /// - Check if the returned count is 0 to avoid busy-waiting in a loop
-        /// - For blocking behavior, use `recv()` when count is 0
-        /// - Reuse the same vector across calls to minimize memory allocations
-        /// - Clear the vector with `vec.clear()` between uses
+        /// When using this function, it’s a good idea to check if the returned count is zero to avoid busy-waiting in a loop.
+        /// If blocking behavior is desired when the count is zero, you can use the `recv()` function if count is zero. For efficiency,
+        /// reusing the same vector across multiple calls can help minimize memory allocations. Between uses, you can clear
+        /// the vector with `vec.clear()` to prepare it for the next set of messages.
         ///
         /// # Examples
         ///
@@ -644,7 +639,6 @@ macro_rules! shared_recv_impl {
         /// # anyhow::Ok(())
         /// ```
         pub fn drain_into(&self, vec: &mut Vec<T>) -> Result<usize, ReceiveError> {
-            let mut count = 0;
             let vec_initial_length = vec.len();
             let remaining_cap = vec.capacity() - vec_initial_length;
             let mut internal = acquire_internal(&self.internal);
@@ -663,14 +657,12 @@ macro_rules! shared_recv_impl {
             }
             while let Some(v) = internal.queue.pop_front() {
                 vec.push(v);
-                count += 1;
             }
             while let Some(p) = internal.next_send() {
                 // Safety: it's safe to receive from owned signal once
                 unsafe { vec.push(p.recv()) }
-                count += 1;
             }
-            Ok(count)
+            Ok(required_cap)
         }
 
         /// Returns, whether the send side of the channel, is closed or not.

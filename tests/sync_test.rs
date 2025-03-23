@@ -291,7 +291,7 @@ fn drain_into_test() {
         tx.send(Box::new(i)).unwrap();
     }
     let mut vec = Vec::new();
-    rx.drain_into(&mut vec).unwrap();
+    assert_eq!(rx.drain_into(&mut vec).unwrap(), TEST_LENGTH);
     assert_eq!(vec.len(), TEST_LENGTH);
     for (i, v) in vec.iter().enumerate() {
         assert_eq!(**v, i);
@@ -310,7 +310,7 @@ fn drain_into_test_zero_sized() {
     }
     std::thread::sleep(Duration::from_millis(1000));
     let mut vec = Vec::new();
-    rx.drain_into(&mut vec).unwrap();
+    assert_eq!(rx.drain_into(&mut vec).unwrap(), TEST_LENGTH);
     assert_eq!(vec.len(), TEST_LENGTH);
     for v in vec.iter() {
         assert_eq!(*v, 0xff);
