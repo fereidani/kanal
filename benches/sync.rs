@@ -1,7 +1,13 @@
 use criterion::*;
-use std::thread::available_parallelism;
+use std::{thread::available_parallelism, time::Duration};
 
-const BENCH_MSG_COUNT: usize = 1 << 16;
+const BENCH_MSG_COUNT: usize = 1 << 20;
+
+fn check_value(value: usize) {
+    if value == 0 {
+        println!("Value should not be zero");
+    }
+}
 
 macro_rules! run_bench {
     ($b:expr, $tx:expr, $rx:expr, $readers:expr, $writers:expr) => {
@@ -12,7 +18,7 @@ macro_rules! run_bench {
                 let rx = $rx.clone();
                 handles.push(spawn(move || {
                     for _ in 0..BENCH_MSG_COUNT / $readers {
-                        rx.recv().unwrap();
+                        check_value(black_box(rx.recv().unwrap()));
                     }
                 }));
             }
@@ -20,7 +26,7 @@ macro_rules! run_bench {
                 let tx = $tx.clone();
                 handles.push(spawn(move || {
                     for i in 0..BENCH_MSG_COUNT / $writers {
-                        tx.send(i).unwrap();
+                        tx.send(i + 1).unwrap();
                     }
                 }));
             }
@@ -32,60 +38,72 @@ macro_rules! run_bench {
 }
 
 fn mpmc(c: &mut Criterion) {
-    c.bench_function("sync::mpmc::b0", |b| {
+    let mut g = c.benchmark_group("sync::mpmc");
+    g.throughput(Throughput::Elements(BENCH_MSG_COUNT as u64));
+    g.sample_size(10).warm_up_time(Duration::from_secs(1));
+    g.bench_function("b0", |b| {
         let (tx, rx) = kanal::bounded::<usize>(0);
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count, core_count);
     });
-    c.bench_function("sync::mpmc::b0_contended", |b| {
+    g.bench_function("b0_contended", |b| {
         let (tx, rx) = kanal::bounded::<usize>(0);
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count * 64, core_count * 64);
     });
-    c.bench_function("sync::mpmc::b1", |b| {
+    g.bench_function("b1", |b| {
         let (tx, rx) = kanal::bounded::<usize>(1);
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count, core_count);
     });
-    c.bench_function("sync::mpmc::bn", |b| {
+    g.bench_function("bn", |b| {
         let (tx, rx) = kanal::unbounded();
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count, core_count);
     });
+    g.finish();
 }
 
 fn mpsc(c: &mut Criterion) {
-    c.bench_function("sync::mpsc::b0", |b| {
+    let mut g = c.benchmark_group("sync::mpsc");
+    g.throughput(Throughput::Elements(BENCH_MSG_COUNT as u64));
+    g.sample_size(10).warm_up_time(Duration::from_secs(1));
+    g.bench_function("b0", |b| {
         let (tx, rx) = kanal::bounded::<usize>(0);
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count, 1);
     });
-    c.bench_function("sync::mpsc::b0_contended", |b| {
+    g.bench_function("b0_contended", |b| {
         let (tx, rx) = kanal::bounded::<usize>(0);
         let core_count = usize::from(available_parallelism().unwrap());
-        run_bench!(b, tx, rx, core_count, 1);
+        run_bench!(b, tx, rx, core_count * 64, 1);
     });
-    c.bench_function("sync::mpsc::b1", |b| {
+    g.bench_function("b1", |b| {
         let (tx, rx) = kanal::bounded::<usize>(1);
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count, 1);
     });
-    c.bench_function("sync::mpsc::bn", |b| {
+    g.bench_function("bn", |b| {
         let (tx, rx) = kanal::unbounded();
         let core_count = usize::from(available_parallelism().unwrap());
         run_bench!(b, tx, rx, core_count, 1);
     });
+    g.finish();
 }
 
 fn spsc(c: &mut Criterion) {
-    c.bench_function("sync::spsc::b0", |b| {
+    let mut g = c.benchmark_group("sync::spsc");
+    g.throughput(Throughput::Elements(BENCH_MSG_COUNT as u64));
+    g.sample_size(10).warm_up_time(Duration::from_secs(1));
+    g.bench_function("b0", |b| {
         let (tx, rx) = kanal::bounded::<usize>(0);
         run_bench!(b, tx, rx, 1, 1);
     });
-    c.bench_function("sync::spsc::b1", |b| {
+    g.bench_function("b1", |b| {
         let (tx, rx) = kanal::bounded::<usize>(1);
         run_bench!(b, tx, rx, 1, 1);
     });
+    g.finish();
 }
 criterion_group!(sync_bench, mpmc, mpsc, spsc);
 criterion_main!(sync_bench);
