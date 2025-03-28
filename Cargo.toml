@@ -17,6 +17,7 @@ lock_api = "0.4"
 
 [dev-dependencies]
 anyhow = "1.0"
+criterion = "0.4"
 crossbeam = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "test-util", "macros"] }
 futures = "0.3"
@@ -25,3 +26,11 @@ futures = "0.3"
 async = ["futures-core"]
 std-mutex = []
 default = ["async"]
+
+[[bench]]
+name = "sync"
+harness = false
+
+[[bench]]
+name = "async"
+harness = false
