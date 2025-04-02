@@ -1,6 +1,5 @@
 use criterion::*;
 use std::{thread::available_parallelism, time::Duration};
-use tokio;
 
 const BENCH_MSG_COUNT: usize = 1 << 20;
 
