@@ -28,7 +28,7 @@ pub fn spin_hint() {
 /// Yields the thread to the scheduler.
 #[allow(dead_code)]
 #[inline(always)]
-pub fn yield_now_std() {
+pub fn yield_os() {
     // On Unix systems, this function uses libc's sched_yield(), which cooperatively
     // gives up a random timeslice to another thread. On Windows systems, it
     // uses SwitchToThread(), which does the same thing.
@@ -49,7 +49,7 @@ pub fn spin_wait(count: usize) {
 /// generator based on an atomic fetch-and-add operation.
 #[allow(dead_code)]
 #[inline(always)]
-pub fn yield_now() {
+pub fn spin_rand() {
     // This number will be added to the calculated pseudo-random number to avoid
     // short spins.
     const OFFSET: usize = 1 << 6;
@@ -145,7 +145,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
         // only one thread of execution, making it impossible for another thread to make
         // progress during the spin wait period.
         while !cond() {
-            yield_now_std();
+            yield_os();
         }
         return;
     }
@@ -170,7 +170,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
     // Longer spinning and yielding phase
     loop {
         for _ in 0..SPIN_YIELD {
-            yield_now();
+            spin_rand();
 
             for _ in 0..spins {
                 if cond() {
@@ -181,7 +181,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
 
         // Longer spinning and yielding phase with OS yield
         for _ in 0..OS_YIELD {
-            yield_now_std();
+            yield_os();
 
             for _ in 0..spins {
                 if cond() {
@@ -207,5 +207,51 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
         }
         // Backoff about 1ms
         sleep(Duration::from_nanos(1 << 20));
+    }
+}
+
+macro_rules! return_if_some {
+    ($result:expr) => {{
+        let result = $result;
+        if result.is_some() {
+            return result;
+        }
+    }};
+}
+
+/// Computes a future timeout instant by adding a specified number of microseconds to the current time.
+///
+/// # Parameters
+/// - `spin_micros`: The number of microseconds to add to the current time.
+///
+/// # Returns
+/// A [`std::time::Instant`] indicating when the timeout will occur.
+///
+/// # Panics
+/// This function will panic if the addition of the duration results in an overflow.
+#[inline(always)]
+#[allow(dead_code)]
+pub(crate) fn spin_option_yield_only<T>(
+    predicate: impl Fn() -> Option<T>,
+    spin_micros: u64,
+) -> Option<T> {
+    // exit early if predicate is already satisfied
+    return_if_some!(predicate());
+    let timeout = if let Some(timeout) =
+        std::time::Instant::now().checked_add(Duration::from_micros(spin_micros))
+    {
+        timeout
+    } else {
+        return None;
+    };
+
+    loop {
+        for _ in 0..32 {
+            yield_os();
+            return_if_some!(predicate());
+        }
+        if std::time::Instant::now() >= timeout {
+            return None;
+        }
     }
 }
