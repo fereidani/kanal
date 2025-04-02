@@ -1,7 +1,4 @@
-use crate::{
-    backoff::{self, get_parallelism},
-    pointer::KanalPtr,
-};
+use crate::{backoff, pointer::KanalPtr};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{fence, AtomicU8, Ordering},
@@ -92,8 +89,7 @@ impl<T> Signal<T> {
         }
 
         for _ in 0..32 {
-            //backoff::spin_wait(96);
-            backoff::yield_now_std();
+            backoff::yield_os();
             let v = self.state.load(Ordering::Relaxed);
             if v < LOCKED {
                 fence(Ordering::Acquire);
@@ -120,18 +116,18 @@ impl<T> Signal<T> {
     /// Waits for the signal event in sync mode,
     #[inline(always)]
     pub(crate) fn wait(&self) -> bool {
-        let v = self.state.load(Ordering::Relaxed);
-        if v < LOCKED {
-            fence(Ordering::Acquire);
-            return v == UNLOCKED;
-        }
-        for _ in 0..256 {
-            backoff::yield_now_std();
-            let v = self.state.load(Ordering::Relaxed);
-            if v < LOCKED {
-                fence(Ordering::Acquire);
-                return v == UNLOCKED;
-            }
+        if let Some(res) = backoff::spin_option_yield_only(
+            || {
+                let v = self.state.load(Ordering::Relaxed);
+                if v < LOCKED {
+                    fence(Ordering::Acquire);
+                    return Some(v == UNLOCKED);
+                }
+                None
+            },
+            25,
+        ) {
+            return res;
         }
         match &self.waker {
             KanalWaker::Sync(waker) => {
@@ -147,8 +143,9 @@ impl<T> Signal<T> {
                 ) {
                     Ok(_) => loop {
                         std::thread::park();
-                        let v = self.state.load(Ordering::Acquire);
+                        let v = self.state.load(Ordering::Relaxed);
                         if v < LOCKED {
+                            fence(Ordering::Acquire);
                             return v == UNLOCKED;
                         }
                     },
@@ -162,27 +159,31 @@ impl<T> Signal<T> {
 
     /// Waits for the signal event in sync mode with a timeout
     pub(crate) fn wait_timeout(&self, until: Instant) -> bool {
-        if get_parallelism() > 1 {
-            for _ in 0..32 {
+        let v = self.state.load(Ordering::Relaxed);
+        if v < LOCKED {
+            fence(Ordering::Acquire);
+            return v == UNLOCKED;
+        }
+        match self.state.compare_exchange(
+            LOCKED,
+            LOCKED_STARVATION,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => loop {
                 let v = self.state.load(Ordering::Relaxed);
                 if v < LOCKED {
                     fence(Ordering::Acquire);
                     return v == UNLOCKED;
                 }
-                // randomize next entry with yield_now
-                backoff::yield_now();
-            }
+                let now = Instant::now();
+                if now >= until {
+                    return self.state.load(Ordering::Acquire) == UNLOCKED;
+                }
+                std::thread::park_timeout(until - now);
+            },
+            Err(v) => v == UNLOCKED,
         }
-        //return self.v.load(Ordering::Acquire);
-        while Instant::now() < until {
-            let v = self.state.load(Ordering::Relaxed);
-            if v < LOCKED {
-                fence(Ordering::Acquire);
-                return v == UNLOCKED;
-            }
-            backoff::yield_now_std();
-        }
-        self.state.load(Ordering::Acquire) == UNLOCKED
     }
 
     /// Set pointer to data for receiving or sending
@@ -228,9 +229,11 @@ impl<T> Signal<T> {
                     .compare_exchange(LOCKED, state, Ordering::Release, Ordering::Acquire)
                     .is_err()
                 {
-                    let thread = (*waker.get()).as_ref().unwrap().clone();
-                    (*this).state.store(state, Ordering::Release);
-                    thread.unpark();
+                    if let Some(thread) = (*waker.get()).as_ref() {
+                        let thread = thread.clone();
+                        (*this).state.store(state, Ordering::Release);
+                        thread.unpark();
+                    }
                 }
             }
             #[cfg(feature = "async")]
