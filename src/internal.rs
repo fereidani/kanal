@@ -14,7 +14,7 @@ pub(crate) fn acquire_internal<T>(internal: &'_ Internal<T>) -> MutexGuard<'_, C
     #[cfg(not(feature = "std-mutex"))]
     return internal.lock();
     #[cfg(feature = "std-mutex")]
-    internal.lock().unwrap()
+    internal.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 /// Tries to acquire mutex guard on channel internal for use in channel
