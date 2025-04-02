@@ -1,9 +1,10 @@
+use cacheguard::CacheGuard;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lock_api::{GuardSend, RawMutex};
 
 use crate::backoff::*;
 pub struct RawMutexLock {
-    locked: AtomicBool,
+    locked: CacheGuard<AtomicBool>,
 }
 
 impl RawMutexLock {
@@ -16,7 +17,7 @@ impl RawMutexLock {
 unsafe impl RawMutex for RawMutexLock {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawMutexLock = RawMutexLock {
-        locked: AtomicBool::new(false),
+        locked: CacheGuard::new(AtomicBool::new(false)),
     };
     type GuardMarker = GuardSend;
     #[inline(always)]

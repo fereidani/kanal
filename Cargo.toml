@@ -12,6 +12,7 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
+cacheguard = "0.1"
 futures-core = { version = "0.3", optional = true }
 lock_api = "0.4"
 
