@@ -1,31 +1,30 @@
+mod common;
+
+pub use common::*;
 use criterion::*;
 use std::{thread::available_parallelism, time::Duration};
 
-const BENCH_MSG_COUNT: usize = 1 << 20;
-
-fn check_value(value: usize) {
-    if value == 0 {
-        println!("Value should not be zero");
-    }
-}
-
 macro_rules! run_bench {
-    ($b:expr, $tx:expr, $rx:expr, $readers:expr, $writers:expr) => {
+    ($b:expr, $tx:expr, $rx:expr, $writers:expr, $readers:expr) => {
         use std::thread::spawn;
+        let readers_dist = evenly_distribute(BENCH_MSG_COUNT, $readers);
+        let writers_dist = evenly_distribute(BENCH_MSG_COUNT, $writers);
         $b.iter(|| {
             let mut handles = Vec::with_capacity($readers + $writers);
-            for _ in 0..$readers {
+            for d in 0..$readers {
                 let rx = $rx.clone();
+                let iterations = readers_dist[d];
                 handles.push(spawn(move || {
-                    for _ in 0..BENCH_MSG_COUNT / $readers {
+                    for _ in 0..iterations {
                         check_value(black_box(rx.recv().unwrap()));
                     }
                 }));
             }
-            for _ in 0..$writers {
+            for d in 0..$writers {
                 let tx = $tx.clone();
+                let iterations = writers_dist[d];
                 handles.push(spawn(move || {
-                    for i in 0..BENCH_MSG_COUNT / $writers {
+                    for i in 0..iterations {
                         tx.send(i + 1).unwrap();
                     }
                 }));
