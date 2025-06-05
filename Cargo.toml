@@ -2,6 +2,7 @@
 name = "kanal"
 version = "0.1.1"
 edition = "2021"
+rust-version = "1.81" #msrv
 authors = ["Khashayar Fereidani"]
 description = "The fast sync and async channel that Rust deserves"
 repository = "https://github.com/fereidani/kanal"
@@ -10,6 +11,7 @@ keywords = ["channel", "mpsc", "mpmc", "async"]
 categories = ["concurrency", "data-structures", "asynchronous"]
 license = "MIT"
 readme = "README.md"
+
 
 [dependencies]
 cacheguard = "0.1"
