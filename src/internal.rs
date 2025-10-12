@@ -2,11 +2,98 @@
 use crate::mutex::{Mutex, MutexGuard};
 use crate::signal::{Signal, SignalTerminator};
 extern crate alloc;
-use alloc::{collections::VecDeque, sync::Arc};
+use alloc::collections::VecDeque;
+use branches::unlikely;
 #[cfg(feature = "std-mutex")]
 use std::sync::{Mutex, MutexGuard};
 
-pub(crate) type Internal<T> = Arc<Mutex<ChannelInternal<T>>>;
+pub(crate) struct Internal<T> {
+    /// The internal channel object
+    internal: *mut Mutex<ChannelInternal<T>>,
+}
+
+// Mutex is sync and send, so we can send it across threads
+unsafe impl<T: Send> Send for Internal<T> {}
+unsafe impl<T> Sync for Internal<T> {}
+
+impl<T> Internal<T> {
+    #[inline(always)]
+    pub(crate) unsafe fn drop(&self) {
+        let _ = Box::from_raw(self.internal);
+    }
+    /// Returns a channel internal with the required capacity
+    #[inline(always)]
+    pub(crate) fn new(bounded: bool, capacity: usize) -> Internal<T> {
+        let mut abstract_capacity = capacity;
+        if !bounded {
+            // act like there is no limit
+            abstract_capacity = usize::MAX;
+        }
+        let wait_list_size = if capacity == 0 { 8 } else { 4 };
+        let ret = ChannelInternal {
+            queue: VecDeque::with_capacity(capacity),
+            recv_blocking: false,
+            wait_list: VecDeque::with_capacity(wait_list_size),
+            recv_count: 1,
+            send_count: 1,
+            capacity: abstract_capacity,
+            // always has the default one sender and one receiver
+            ref_count: 2,
+        };
+
+        Internal {
+            internal: Box::into_raw(Box::new(Mutex::new(ret))),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn clone_recv(&self) -> Internal<T> {
+        acquire_internal(self).inc_ref_count(false);
+        Internal {
+            internal: self.internal,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn drop_recv(&mut self) {
+        let mut internal = acquire_internal(self);
+        if unlikely(internal.dec_ref_count(false)) {
+            drop(internal);
+            unsafe { self.drop() }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn clone_send(&self) -> Internal<T> {
+        acquire_internal(self).inc_ref_count(true);
+        Internal {
+            internal: self.internal,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn drop_send(&mut self) {
+        let mut internal = acquire_internal(self);
+        if unlikely(internal.dec_ref_count(true)) {
+            drop(internal);
+            unsafe { self.drop() }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn clone_unchecked(&self) -> Internal<T> {
+        Internal {
+            internal: self.internal,
+        }
+    }
+}
+
+impl<T> core::ops::Deref for Internal<T> {
+    type Target = Mutex<ChannelInternal<T>>;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &(*self.internal) }
+    }
+}
 
 /// Acquire mutex guard on channel internal for use in channel operations
 #[inline(always)]
@@ -47,36 +134,14 @@ pub(crate) struct ChannelInternal<T> {
     pub(crate) recv_count: u32,
     /// Count of alive senders
     pub(crate) send_count: u32,
+    /// Reference counter for the alive instances of the channel
+    pub(crate) ref_count: u64,
 }
 
-// Safety: It is safe to implement `Send` for `ChannelInternal<T>` if `T` is
-// `Send`.
-unsafe impl<T: Send> Send for ChannelInternal<T> {}
-
 impl<T> ChannelInternal<T> {
-    /// Returns a channel internal with the required capacity
-    #[inline(always)]
-    pub(crate) fn new(bounded: bool, capacity: usize) -> Internal<T> {
-        let mut abstract_capacity = capacity;
-        if !bounded {
-            // act like there is no limit
-            abstract_capacity = usize::MAX;
-        }
-        let wait_list_size = if capacity == 0 { 8 } else { 4 };
-        let ret = Self {
-            queue: VecDeque::with_capacity(capacity),
-            recv_blocking: false,
-            wait_list: VecDeque::with_capacity(wait_list_size),
-            recv_count: 1,
-            send_count: 1,
-            capacity: abstract_capacity,
-        };
-
-        Arc::new(Mutex::from(ret))
-    }
-
     /// Terminates remainings signals in the queue to notify listeners about the
     /// closing of the channel
+    #[cold]
     pub(crate) fn terminate_signals(&mut self) {
         for t in self.wait_list.iter() {
             // Safety: it's safe to terminate owned signal once
@@ -179,5 +244,38 @@ impl<T> ChannelInternal<T> {
             }
         }
         false
+    }
+
+    /// Increases ref count for sender or receiver
+    #[inline(always)]
+    pub(crate) fn inc_ref_count(&mut self, is_sender: bool) {
+        if is_sender {
+            if self.send_count > 0 {
+                self.send_count += 1;
+            }
+        } else if self.recv_count > 0 {
+            self.recv_count += 1;
+        }
+        self.ref_count += 1;
+    }
+
+    /// Decreases ref count for sender or receiver
+    #[inline(always)]
+    pub(crate) fn dec_ref_count(&mut self, is_sender: bool) -> bool {
+        if is_sender {
+            if self.send_count > 0 {
+                self.send_count -= 1;
+                if self.send_count == 0 && self.recv_count != 0 {
+                    self.terminate_signals();
+                }
+            }
+        } else if self.recv_count > 0 {
+            self.recv_count -= 1;
+            if self.recv_count == 0 && self.send_count != 0 {
+                self.terminate_signals();
+            }
+        }
+        self.ref_count -= 1;
+        self.ref_count == 0
     }
 }

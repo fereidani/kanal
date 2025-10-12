@@ -10,6 +10,8 @@ use core::{
 };
 use std::{thread::Thread, time::Instant};
 
+use branches::{likely, unlikely};
+
 const UNLOCKED: u8 = 0;
 const TERMINATED: u8 = 1;
 const LOCKED: u8 = 2;
@@ -50,7 +52,7 @@ impl<T> Signal<T> {
     #[cfg(feature = "async")]
     pub(crate) fn poll(&self) -> Poll<bool> {
         let v = self.state.load(Ordering::Relaxed);
-        if v < LOCKED {
+        if likely(v < LOCKED) {
             fence(Ordering::Acquire);
             Poll::Ready(v == UNLOCKED)
         } else {
@@ -83,7 +85,7 @@ impl<T> Signal<T> {
     #[cfg(feature = "async")]
     pub(crate) fn async_blocking_wait(&self) -> bool {
         let v = self.state.load(Ordering::Relaxed);
-        if v < LOCKED {
+        if likely(v < LOCKED) {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
@@ -91,7 +93,7 @@ impl<T> Signal<T> {
         for _ in 0..32 {
             backoff::yield_os();
             let v = self.state.load(Ordering::Relaxed);
-            if v < LOCKED {
+            if likely(v < LOCKED) {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
             }
@@ -102,7 +104,7 @@ impl<T> Signal<T> {
         loop {
             backoff::sleep(Duration::from_nanos(sleep_time));
             let v = self.state.load(Ordering::Relaxed);
-            if v < LOCKED {
+            if likely(v < LOCKED) {
                 fence(Ordering::Acquire);
                 return v == UNLOCKED;
             }
@@ -116,18 +118,26 @@ impl<T> Signal<T> {
     /// Waits for the signal event in sync mode,
     #[inline(always)]
     pub(crate) fn wait(&self) -> bool {
-        if let Some(res) = backoff::spin_option_yield_only(
-            || {
+        let v = self.state.load(Ordering::Relaxed);
+        if likely(v < LOCKED) {
+            fence(Ordering::Acquire);
+            return v == UNLOCKED;
+        }
+        let now = Instant::now();
+        let spin_timeout = now.checked_add(Duration::from_micros(25)).unwrap_or(now);
+        // 25 microseconds or 256 os yields, whichever happens first
+        for _ in 0..4 {
+            for _ in 0..64 {
+                backoff::yield_os();
                 let v = self.state.load(Ordering::Relaxed);
-                if v < LOCKED {
+                if likely(v < LOCKED) {
                     fence(Ordering::Acquire);
-                    return Some(v == UNLOCKED);
+                    return v == UNLOCKED;
                 }
-                None
-            },
-            25,
-        ) {
-            return res;
+            }
+            if unlikely(Instant::now() >= spin_timeout) {
+                break;
+            }
         }
         match &self.waker {
             KanalWaker::Sync(waker) => {
@@ -144,7 +154,7 @@ impl<T> Signal<T> {
                     Ok(_) => loop {
                         std::thread::park();
                         let v = self.state.load(Ordering::Relaxed);
-                        if v < LOCKED {
+                        if likely(v < LOCKED) {
                             fence(Ordering::Acquire);
                             return v == UNLOCKED;
                         }
@@ -160,7 +170,7 @@ impl<T> Signal<T> {
     /// Waits for the signal event in sync mode with a timeout
     pub(crate) fn wait_timeout(&self, until: Instant) -> bool {
         let v = self.state.load(Ordering::Relaxed);
-        if v < LOCKED {
+        if likely(v < LOCKED) {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
@@ -172,7 +182,7 @@ impl<T> Signal<T> {
         ) {
             Ok(_) => loop {
                 let v = self.state.load(Ordering::Relaxed);
-                if v < LOCKED {
+                if likely(v < LOCKED) {
                     fence(Ordering::Acquire);
                     return v == UNLOCKED;
                 }
@@ -320,7 +330,7 @@ impl<T> SignalTerminator<T> {
 
 impl<T> PartialEq<Signal<T>> for SignalTerminator<T> {
     fn eq(&self, other: &Signal<T>) -> bool {
-        self.0 == other as *const Signal<T>
+        core::ptr::eq(self.0, other as *const Signal<T>)
     }
 }
 

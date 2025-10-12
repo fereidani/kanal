@@ -11,6 +11,8 @@ use core::{
     pin::Pin,
     task::Poll,
 };
+
+use branches::{likely, unlikely};
 use futures_core::{FusedStream, Future, Stream};
 
 #[repr(u8)]
@@ -20,6 +22,9 @@ pub(crate) enum FutureState {
     Waiting,
     Done,
 }
+
+#[cold]
+fn mark_branch_unlikely() {}
 
 impl FutureState {
     #[inline(always)]
@@ -52,7 +57,7 @@ impl<T> Debug for SendFuture<'_, T> {
 
 impl<T> Drop for SendFuture<'_, T> {
     fn drop(&mut self) {
-        if !self.state.is_done() {
+        if unlikely(!self.state.is_done()) {
             if self.state.is_waiting()
                 && !acquire_internal(self.internal).cancel_send_signal(&self.sig)
             {
@@ -129,7 +134,7 @@ impl<T> Future for SendFuture<'_, T> {
         match this.state {
             FutureState::Zero => {
                 let mut internal = acquire_internal(this.internal);
-                if internal.recv_count == 0 {
+                if unlikely(internal.recv_count == 0) {
                     let send_count = internal.send_count;
                     drop(internal);
                     this.state = FutureState::Done;
@@ -177,7 +182,7 @@ impl<T> Future for SendFuture<'_, T> {
             FutureState::Waiting => match this.sig.poll() {
                 Poll::Ready(success) => {
                     this.state = FutureState::Done;
-                    if success {
+                    if likely(success) {
                         Poll::Ready(Ok(()))
                     } else {
                         if needs_drop::<T>() {
@@ -192,12 +197,13 @@ impl<T> Future for SendFuture<'_, T> {
                     }
                 }
                 Poll::Pending => {
-                    if !this.sig.will_wake(cx.waker()) {
+                    mark_branch_unlikely();
+                    if unlikely(!this.sig.will_wake(cx.waker())) {
                         // Waker is changed and we need to update waker in the waiting list
                         if acquire_internal(this.internal).send_signal_exists(&this.sig) {
                             // signal is not shared with other thread yet so it's safe to
                             // update waker locally
-                            // this.sig.register_waker(cx.waker());
+                            this.sig.register_waker(cx.waker());
                             Poll::Pending
                         } else {
                             // signal is already shared, and data will be available shortly, so wait
@@ -245,7 +251,7 @@ pub struct ReceiveFuture<'a, T> {
 
 impl<T> Drop for ReceiveFuture<'_, T> {
     fn drop(&mut self) {
-        if self.state.is_waiting() {
+        if unlikely(self.state.is_waiting()) {
             // try to cancel recv signal
             if !acquire_internal(self.internal).cancel_recv_signal(&self.sig) {
                 // a sender got signal ownership, receiver should wait until the response
@@ -314,7 +320,7 @@ impl<T> Future for ReceiveFuture<'_, T> {
             return match this.state {
                 FutureState::Zero => {
                     let mut internal = acquire_internal(this.internal);
-                    if internal.recv_count == 0 {
+                    if unlikely(internal.recv_count == 0) {
                         this.state = FutureState::Done;
                         return Poll::Ready(Err(ReceiveError::Closed));
                     }
@@ -331,7 +337,7 @@ impl<T> Future for ReceiveFuture<'_, T> {
                         this.state = FutureState::Done;
                         Poll::Ready(Ok(unsafe { t.recv() }))
                     } else {
-                        if internal.send_count == 0 {
+                        if unlikely(internal.send_count == 0) {
                             this.state = FutureState::Done;
                             return Poll::Ready(Err(ReceiveError::SendClosed));
                         }
@@ -352,7 +358,7 @@ impl<T> Future for ReceiveFuture<'_, T> {
                 FutureState::Waiting => match this.sig.poll() {
                     Poll::Ready(success) => {
                         this.state = FutureState::Done;
-                        if success {
+                        if likely(success) {
                             Poll::Ready(Ok(unsafe { this.read_local_data() }))
                         } else {
                             Poll::Ready(Err(ReceiveError::Closed))
@@ -374,7 +380,7 @@ impl<T> Future for ReceiveFuture<'_, T> {
                                 // is shared, but we know data will be ready shortly,
                                 //   we can wait synchronously and receive it.
                                 this.state = FutureState::Done;
-                                if this.sig.async_blocking_wait() {
+                                if likely(this.sig.async_blocking_wait()) {
                                     Poll::Ready(Ok(unsafe { this.read_local_data() }))
                                 } else {
                                     Poll::Ready(Err(ReceiveError::Closed))
@@ -386,6 +392,7 @@ impl<T> Future for ReceiveFuture<'_, T> {
                     }
                 },
                 _ => {
+                    mark_branch_unlikely();
                     if this.is_stream {
                         this.state = FutureState::Zero;
                         continue;
@@ -418,7 +425,7 @@ impl<T> Stream for ReceiveStream<'_, T> {
         mut self: Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if self.terminated {
+        if unlikely(self.terminated) {
             return Poll::Ready(None);
         }
         // Safety: future is pinned as stream is pinned to a location too
@@ -426,6 +433,7 @@ impl<T> Stream for ReceiveStream<'_, T> {
             Poll::Ready(res) => match res {
                 Ok(d) => Poll::Ready(Some(d)),
                 Err(_) => {
+                    mark_branch_unlikely();
                     self.terminated = true;
                     Poll::Ready(None)
                 }

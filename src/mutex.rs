@@ -1,3 +1,4 @@
+use branches::likely;
 use cacheguard::CacheGuard;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lock_api::{GuardSend, RawMutex};
@@ -22,7 +23,7 @@ unsafe impl RawMutex for RawMutexLock {
     type GuardMarker = GuardSend;
     #[inline(always)]
     fn lock(&self) {
-        if self.try_lock() {
+        if likely(self.try_lock()) {
             return;
         }
         self.lock_no_inline();
@@ -30,9 +31,11 @@ unsafe impl RawMutex for RawMutexLock {
 
     #[inline(always)]
     fn try_lock(&self) -> bool {
-        self.locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+        likely(
+            self.locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok(),
+        )
     }
 
     #[inline(always)]

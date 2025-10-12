@@ -8,13 +8,14 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
     time::Duration,
 };
+use std::thread;
 
-use std::thread::available_parallelism;
+use branches::{likely, unlikely};
 
 /// Puts the current thread to sleep for a specified duration.
 #[inline(always)]
 pub fn sleep(dur: Duration) {
-    std::thread::sleep(dur)
+    thread::sleep(dur)
 }
 
 /// Emits a CPU instruction that signals the processor that it is in a spin
@@ -109,7 +110,7 @@ pub fn get_parallelism() -> usize {
     if p == 0 {
         // Try to get the degree of parallelism from available_parallelism.
         // If it is not available, default to 1.
-        p = usize::from(available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()));
+        p = usize::from(thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()));
         PARALLELISM.store(p, Ordering::SeqCst);
     }
     // Return the computed degree of parallelism.
@@ -144,7 +145,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
         // CPU usage without performance benefits. This is due to the fact that there's
         // only one thread of execution, making it impossible for another thread to make
         // progress during the spin wait period.
-        while !cond() {
+        while unlikely(!cond()) {
             yield_os();
         }
         return;
@@ -160,7 +161,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
     // Short spinning phase
     for _ in 0..NO_YIELD {
         for _ in 0..SPINS / 2 {
-            if cond() {
+            if likely(cond()) {
                 return;
             }
             spin_hint();
@@ -173,7 +174,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             spin_rand();
 
             for _ in 0..spins {
-                if cond() {
+                if likely(cond()) {
                     return;
                 }
             }
@@ -184,7 +185,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             yield_os();
 
             for _ in 0..spins {
-                if cond() {
+                if likely(cond()) {
                     return;
                 }
             }
@@ -195,7 +196,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             sleep(Duration::from_nanos(0));
 
             for _ in 0..spins {
-                if cond() {
+                if likely(cond()) {
                     return;
                 }
             }
@@ -213,7 +214,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
 macro_rules! return_if_some {
     ($result:expr) => {{
         let result = $result;
-        if result.is_some() {
+        if likely(result.is_some()) {
             return result;
         }
     }};
@@ -237,14 +238,7 @@ pub(crate) fn spin_option_yield_only<T>(
 ) -> Option<T> {
     // exit early if predicate is already satisfied
     return_if_some!(predicate());
-    let timeout = if let Some(timeout) =
-        std::time::Instant::now().checked_add(Duration::from_micros(spin_micros))
-    {
-        timeout
-    } else {
-        return None;
-    };
-
+    let timeout = std::time::Instant::now().checked_add(Duration::from_micros(spin_micros))?;
     loop {
         for _ in 0..32 {
             yield_os();

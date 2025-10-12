@@ -25,7 +25,8 @@ use core::{
 };
 use std::time::Instant;
 
-use internal::{acquire_internal, try_acquire_internal, ChannelInternal, Internal};
+use branches::unlikely;
+use internal::{acquire_internal, try_acquire_internal, Internal};
 use pointer::KanalPtr;
 use signal::*;
 
@@ -66,38 +67,21 @@ pub struct AsyncSender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.send_count > 0 {
-            internal.send_count -= 1;
-            if internal.send_count == 0 && internal.recv_count != 0 {
-                internal.terminate_signals();
-            }
-        }
+        self.internal.drop_send();
     }
 }
 
 #[cfg(feature = "async")]
 impl<T> Drop for AsyncSender<T> {
     fn drop(&mut self) {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.send_count > 0 {
-            internal.send_count -= 1;
-            if internal.send_count == 0 && internal.recv_count != 0 {
-                internal.terminate_signals();
-            }
-        }
+        self.internal.drop_send();
     }
 }
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.send_count > 0 {
-            internal.send_count += 1;
-        }
-        drop(internal);
         Self {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_send(),
         }
     }
 }
@@ -111,13 +95,8 @@ impl<T> fmt::Debug for Sender<T> {
 #[cfg(feature = "async")]
 impl<T> Clone for AsyncSender<T> {
     fn clone(&self) -> Self {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.send_count > 0 {
-            internal.send_count += 1;
-        }
-        drop(internal);
         Self {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_send(),
         }
     }
 }
@@ -247,7 +226,7 @@ macro_rules! shared_impl {
         /// ```
         pub fn close(&self) -> Result<(), CloseError> {
             let mut internal = acquire_internal(&self.internal);
-            if internal.recv_count == 0 && internal.send_count == 0 {
+            if unlikely(internal.recv_count == 0 && internal.send_count == 0) {
                 return Err(CloseError());
             }
             internal.recv_count = 0;
@@ -303,7 +282,7 @@ macro_rules! shared_send_impl {
         #[inline(always)]
         pub fn try_send(&self, data: T) -> Result<bool, SendError> {
             let mut internal = acquire_internal(&self.internal);
-            if internal.recv_count == 0 {
+            if unlikely(internal.recv_count == 0) {
                 let send_count = internal.send_count;
                 // Avoid wasting lock time on dropping failed send object
                 drop(internal);
@@ -350,11 +329,11 @@ macro_rules! shared_send_impl {
         /// ```
         #[inline(always)]
         pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, SendError> {
-            if data.is_none() {
+            if unlikely(data.is_none()) {
                 panic!("send data option is None");
             }
             let mut internal = acquire_internal(&self.internal);
-            if internal.recv_count == 0 {
+            if unlikely(internal.recv_count == 0) {
                 let send_count = internal.send_count;
                 // Avoid wasting lock time on dropping failed send object
                 drop(internal);
@@ -401,7 +380,7 @@ macro_rules! shared_send_impl {
         #[inline(always)]
         pub fn try_send_realtime(&self, data: T) -> Result<bool, SendError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if internal.recv_count == 0 {
+                if unlikely(internal.recv_count == 0) {
                     let send_count = internal.send_count;
                     // Avoid wasting lock time on dropping failed send object
                     drop(internal);
@@ -453,7 +432,7 @@ macro_rules! shared_send_impl {
                 panic!("send data option is None");
             }
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if internal.recv_count == 0 {
+                if unlikely(internal.recv_count == 0) {
                     let send_count = internal.send_count;
                     // Avoid wasting lock time on dropping failed send object
                     drop(internal);
@@ -520,7 +499,7 @@ macro_rules! shared_recv_impl {
         #[inline(always)]
         pub fn try_recv(&self) -> Result<Option<T>, ReceiveError> {
             let mut internal = acquire_internal(&self.internal);
-            if internal.recv_count == 0 {
+            if unlikely(internal.recv_count == 0) {
                 return Err(ReceiveError::Closed);
             }
             if let Some(v) = internal.queue.pop_front() {
@@ -536,7 +515,7 @@ macro_rules! shared_recv_impl {
                 drop(internal);
                 return unsafe { Ok(Some(p.recv())) };
             }
-            if internal.send_count == 0 {
+            if unlikely(internal.send_count == 0) {
                 return Err(ReceiveError::SendClosed);
             }
             Ok(None)
@@ -569,7 +548,7 @@ macro_rules! shared_recv_impl {
         #[inline(always)]
         pub fn try_recv_realtime(&self) -> Result<Option<T>, ReceiveError> {
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if internal.recv_count == 0 {
+                if unlikely(internal.recv_count == 0) {
                     return Err(ReceiveError::Closed);
                 }
                 if let Some(v) = internal.queue.pop_front() {
@@ -585,7 +564,7 @@ macro_rules! shared_recv_impl {
                     drop(internal);
                     return unsafe { Ok(Some(p.recv())) };
                 }
-                if internal.send_count == 0 {
+                if unlikely(internal.send_count == 0) {
                     return Err(ReceiveError::SendClosed);
                 }
             }
@@ -642,7 +621,7 @@ macro_rules! shared_recv_impl {
             let vec_initial_length = vec.len();
             let remaining_cap = vec.capacity() - vec_initial_length;
             let mut internal = acquire_internal(&self.internal);
-            if internal.recv_count == 0 {
+            if unlikely(internal.recv_count == 0) {
                 return Err(ReceiveError::Closed);
             }
             let required_cap = internal.queue.len() + {
@@ -720,7 +699,7 @@ impl<T> Sender<T> {
     #[inline(always)]
     pub fn send(&self, data: T) -> Result<(), SendError> {
         let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count == 0 {
+        if unlikely(internal.recv_count == 0) {
             let send_count = internal.send_count;
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
@@ -744,7 +723,7 @@ impl<T> Sender<T> {
             let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
             internal.push_send(sig.get_terminator());
             drop(internal);
-            if !sig.wait() {
+            if unlikely(!sig.wait()) {
                 // Safety: data failed to move, sender should drop it if it
                 // needs to
                 if needs_drop::<T>() {
@@ -778,7 +757,7 @@ impl<T> Sender<T> {
     pub fn send_timeout(&self, data: T, duration: Duration) -> Result<(), SendErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count == 0 {
+        if unlikely(internal.recv_count == 0) {
             let send_count = internal.send_count;
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
@@ -803,7 +782,7 @@ impl<T> Sender<T> {
             let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
             internal.push_send(sig.get_terminator());
             drop(internal);
-            if !sig.wait_timeout(deadline) {
+            if unlikely(!sig.wait_timeout(deadline)) {
                 if sig.is_terminated() {
                     // Safety: data failed to move, sender should drop it if it
                     // needs to
@@ -819,7 +798,7 @@ impl<T> Sender<T> {
                     }
                 }
                 // removing receive failed to wait for the signal response
-                if !sig.wait() {
+                if unlikely(!sig.wait()) {
                     // Safety: data failed to move, sender should drop it if it
                     // needs to
                     if needs_drop::<T>() {
@@ -862,7 +841,7 @@ impl<T> Sender<T> {
         }
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count == 0 {
+        if unlikely(internal.recv_count == 0) {
             let send_count = internal.send_count;
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
@@ -885,7 +864,7 @@ impl<T> Sender<T> {
             let sig = Signal::new_sync(KanalPtr::new_from(&mut d));
             internal.push_send(sig.get_terminator());
             drop(internal);
-            if !sig.wait_timeout(deadline) {
+            if unlikely(!sig.wait_timeout(deadline)) {
                 if sig.is_terminated() {
                     *data = Some(d);
                     return Err(SendErrorTimeout::Closed);
@@ -898,7 +877,7 @@ impl<T> Sender<T> {
                     }
                 }
                 // removing receive failed to wait for the signal response
-                if !sig.wait() {
+                if unlikely(!sig.wait()) {
                     *data = Some(d);
                     return Err(SendErrorTimeout::Closed);
                 }
@@ -911,13 +890,8 @@ impl<T> Sender<T> {
     /// Clones [`Sender`] as the async version of it and returns it
     #[cfg(feature = "async")]
     pub fn clone_async(&self) -> AsyncSender<T> {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.send_count > 0 {
-            internal.send_count += 1;
-        }
-        drop(internal);
         AsyncSender::<T> {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_send(),
         }
     }
 
@@ -1002,13 +976,8 @@ impl<T> AsyncSender<T> {
     /// # });
     /// ```
     pub fn clone_sync(&self) -> Sender<T> {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.send_count > 0 {
-            internal.send_count += 1;
-        }
-        drop(internal);
         Sender::<T> {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_send(),
         }
     }
 
@@ -1115,7 +1084,7 @@ impl<T> Receiver<T> {
     #[inline(always)]
     pub fn recv(&self) -> Result<T, ReceiveError> {
         let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count == 0 {
+        if unlikely(internal.recv_count == 0) {
             return Err(ReceiveError::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
@@ -1130,7 +1099,7 @@ impl<T> Receiver<T> {
             // Safety: it's safe to receive from owned signal once
             unsafe { Ok(p.recv()) }
         } else {
-            if internal.send_count == 0 {
+            if unlikely(internal.send_count == 0) {
                 return Err(ReceiveError::SendClosed);
             }
             // no active waiter so push to the queue
@@ -1139,7 +1108,7 @@ impl<T> Receiver<T> {
             internal.push_recv(sig.get_terminator());
             drop(internal);
 
-            if !sig.wait() {
+            if unlikely(!sig.wait()) {
                 return Err(ReceiveError::Closed);
             }
 
@@ -1158,7 +1127,7 @@ impl<T> Receiver<T> {
     pub fn recv_timeout(&self, duration: Duration) -> Result<T, ReceiveErrorTimeout> {
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count == 0 {
+        if unlikely(internal.recv_count == 0) {
             return Err(ReceiveErrorTimeout::Closed);
         }
         if let Some(v) = internal.queue.pop_front() {
@@ -1173,10 +1142,10 @@ impl<T> Receiver<T> {
             // Safety: it's safe to receive from owned signal once
             unsafe { Ok(p.recv()) }
         } else {
-            if Instant::now() > deadline {
+            if unlikely(Instant::now() > deadline) {
                 return Err(ReceiveErrorTimeout::Timeout);
             }
-            if internal.send_count == 0 {
+            if unlikely(internal.send_count == 0) {
                 return Err(ReceiveErrorTimeout::SendClosed);
             }
             // no active waiter so push to the queue
@@ -1184,7 +1153,7 @@ impl<T> Receiver<T> {
             let sig = Signal::new_sync(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
             internal.push_recv(sig.get_terminator());
             drop(internal);
-            if !sig.wait_timeout(deadline) {
+            if unlikely(!sig.wait_timeout(deadline)) {
                 if sig.is_terminated() {
                     return Err(ReceiveErrorTimeout::Closed);
                 }
@@ -1195,7 +1164,7 @@ impl<T> Receiver<T> {
                     }
                 }
                 // removing receive failed to wait for the signal response
-                if !sig.wait() {
+                if unlikely(!sig.wait()) {
                     return Err(ReceiveErrorTimeout::Closed);
                 }
             }
@@ -1214,13 +1183,8 @@ impl<T> Receiver<T> {
     #[cfg(feature = "async")]
     /// Clones receiver as the async version of it
     pub fn clone_async(&self) -> AsyncReceiver<T> {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count > 0 {
-            internal.recv_count += 1;
-        }
-        drop(internal);
         AsyncReceiver::<T> {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_recv(),
         }
     }
 
@@ -1375,13 +1339,8 @@ impl<T> AsyncReceiver<T> {
     /// # });
     /// ```
     pub fn clone_sync(&self) -> Receiver<T> {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count > 0 {
-            internal.recv_count += 1;
-        }
-        drop(internal);
         Receiver::<T> {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_recv(),
         }
     }
 
@@ -1436,38 +1395,21 @@ impl<T> AsyncReceiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count > 0 {
-            internal.recv_count -= 1;
-            if internal.recv_count == 0 && internal.send_count != 0 {
-                internal.terminate_signals();
-            }
-        }
+        self.internal.drop_recv();
     }
 }
 
 #[cfg(feature = "async")]
 impl<T> Drop for AsyncReceiver<T> {
     fn drop(&mut self) {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count > 0 {
-            internal.recv_count -= 1;
-            if internal.recv_count == 0 && internal.send_count != 0 {
-                internal.terminate_signals();
-            }
-        }
+        self.internal.drop_recv();
     }
 }
 
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count > 0 {
-            internal.recv_count += 1;
-        }
-        drop(internal);
         Self {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_recv(),
         }
     }
 }
@@ -1475,13 +1417,8 @@ impl<T> Clone for Receiver<T> {
 #[cfg(feature = "async")]
 impl<T> Clone for AsyncReceiver<T> {
     fn clone(&self) -> Self {
-        let mut internal = acquire_internal(&self.internal);
-        if internal.recv_count > 0 {
-            internal.recv_count += 1;
-        }
-        drop(internal);
         Self {
-            internal: self.internal.clone(),
+            internal: self.internal.clone_recv(),
         }
     }
 }
@@ -1516,10 +1453,10 @@ impl<T> Clone for AsyncReceiver<T> {
 /// assert_eq!(total, 39600);
 /// ```
 pub fn bounded<T>(size: usize) -> (Sender<T>, Receiver<T>) {
-    let internal = ChannelInternal::new(true, size);
+    let internal = Internal::new(true, size);
     (
         Sender {
-            internal: internal.clone(),
+            internal: internal.clone_unchecked(),
         },
         Receiver { internal },
     )
@@ -1550,10 +1487,10 @@ pub fn bounded<T>(size: usize) -> (Sender<T>, Receiver<T>) {
 /// ```
 #[cfg(feature = "async")]
 pub fn bounded_async<T>(size: usize) -> (AsyncSender<T>, AsyncReceiver<T>) {
-    let internal = ChannelInternal::new(true, size);
+    let internal = Internal::new(true, size);
     (
         AsyncSender {
-            internal: internal.clone(),
+            internal: internal.clone_unchecked(),
         },
         AsyncReceiver { internal },
     )
@@ -1596,10 +1533,10 @@ const UNBOUNDED_STARTING_SIZE: usize = 32;
 /// assert_eq!(total, 39600);
 /// ```
 pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
-    let internal = ChannelInternal::new(false, UNBOUNDED_STARTING_SIZE);
+    let internal = Internal::new(false, UNBOUNDED_STARTING_SIZE);
     (
         Sender {
-            internal: internal.clone(),
+            internal: internal.clone_unchecked(),
         },
         Receiver { internal },
     )
@@ -1634,10 +1571,10 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 /// ```
 #[cfg(feature = "async")]
 pub fn unbounded_async<T>() -> (AsyncSender<T>, AsyncReceiver<T>) {
-    let internal = ChannelInternal::new(false, UNBOUNDED_STARTING_SIZE);
+    let internal = Internal::new(false, UNBOUNDED_STARTING_SIZE);
     (
         AsyncSender {
-            internal: internal.clone(),
+            internal: internal.clone_unchecked(),
         },
         AsyncReceiver { internal },
     )
