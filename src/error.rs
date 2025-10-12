@@ -11,7 +11,7 @@ pub enum SendError {
     /// closed from the receive side
     ReceiveClosed,
 }
-impl core::error::Error for SendError {}
+impl std::error::Error for SendError {}
 impl fmt::Display for SendError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(
