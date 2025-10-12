@@ -22,17 +22,12 @@ jobs:
       - uses: actions/checkout@master
 
       - name: Install ${{ matrix.version }}
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.version }}-x86_64-unknown-linux-gnu
-          profile: minimal
-          components: rustfmt
-          override: true
+        run: |
+          rustup toolchain install ${{ matrix.version }} --profile minimal --component rustfmt
+          rustup default ${{ matrix.version }}
 
       - name: Generate Cargo.lock
-        uses: actions-rs/cargo@v1
-        with:
-          command: generate-lockfile
+        run: cargo generate-lockfile
 
       - name: Cache cargo registry
         uses: actions/cache@v3
@@ -47,11 +42,8 @@ jobs:
           key: ${{ matrix.version }}-x86_64-unknown-linux-gnu-cargo-index-trimmed-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
-        uses: actions-rs/cargo@v1
         timeout-minutes: 40
-        with:
-          command: test
-          args: --all-features -- --nocapture
+        run: cargo test --all-features -- --nocapture
 
       - name: Install cargo-cache
         continue-on-error: true

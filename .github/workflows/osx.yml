@@ -19,18 +19,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@master
+
       - name: Install ${{ matrix.version }}
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.version }}-aarch64-apple-darwin
-          profile: minimal
-          components: rustfmt
-          override: true
+        run: |
+          rustup toolchain install ${{ matrix.version }}-aarch64-apple-darwin --profile minimal --component rustfmt
+          rustup default ${{ matrix.version }}-aarch64-apple-darwin
 
       - name: Generate Cargo.lock
-        uses: actions-rs/cargo@v1
-        with:
-          command: generate-lockfile
+        run: cargo generate-lockfile
 
       - name: Cache cargo registry
         uses: actions/cache@v3
@@ -45,10 +41,7 @@ jobs:
           key: ${{ matrix.version }}-aarch64-apple-darwin-cargo-index-trimmed-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features
+        run: cargo test --all-features
 
       - name: Clear the cargo caches
         run: |
