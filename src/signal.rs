@@ -1,125 +1,193 @@
 use crate::{backoff, pointer::KanalPtr};
+#[cfg(feature = "async")]
+use core::task::Waker;
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{fence, AtomicU8, Ordering},
-};
-#[cfg(feature = "async")]
-use core::{
-    task::{Poll, Waker},
+    mem::{ManuallyDrop, MaybeUninit},
+    sync::atomic::{fence, AtomicUsize, Ordering},
     time::Duration,
 };
-use std::{thread::Thread, time::Instant};
+use std::{
+    thread::{current as current_thread, Thread},
+    time::Instant,
+};
 
 use branches::{likely, unlikely};
 
-const UNLOCKED: u8 = 0;
-const TERMINATED: u8 = 1;
-const LOCKED: u8 = 2;
-const LOCKED_STARVATION: u8 = 3;
+const LOCKED: usize = 0;
+const LOCKED_STARVATION: usize = 1;
+const TERMINATED: usize = !0 - 1;
+const UNLOCKED: usize = !0;
 
-/// `KanalWaker` is a structure to enable synchronization in both async and
-/// sync.
-#[repr(u8)]
-pub(crate) enum KanalWaker {
-    #[cfg(feature = "async")]
-    None,
-    Sync(UnsafeCell<Option<Thread>>),
-    #[cfg(feature = "async")]
-    Async(Waker),
+#[inline(always)]
+fn tag_pointer<T>(ptr: *const T) -> *const () {
+    debug_assert!(
+        (ptr.addr() & 1) == 0,
+        "Tagging pointer failed due to target memory alignment"
+    );
+    ptr.map_addr(|addr| addr | 1).cast()
 }
 
-/// `Signal<T>` struct is responsible for communicating between threads and
-/// coroutines for both reads and writes.
-pub struct Signal<T> {
-    state: AtomicU8,
-    ptr: KanalPtr<T>,
-    waker: KanalWaker,
+#[inline(always)]
+fn untag_pointer<T>(ptr: *const ()) -> (*const T, bool) {
+    let is_tagged = (ptr.addr() & 1) == 1;
+    let untagged = ptr.map_addr(|addr| addr & !1).cast::<T>();
+    (untagged, is_tagged)
 }
 
-impl<T> Signal<T> {
-    /// Signal to send data to a writer
-    #[inline(always)]
+#[repr(C)]
+pub(crate) struct DynamicSignal<T> {
+    ptr: *const (),
+    _marker: core::marker::PhantomData<T>,
+}
+
+enum PointerResult<T> {
+    Sync(*const SyncSignal<T>),
     #[cfg(feature = "async")]
-    pub(crate) fn new_async() -> Self {
+    Async(*const AsyncSignal<T>),
+}
+
+impl<T> DynamicSignal<T> {
+    #[cfg(feature = "async")]
+    pub(crate) fn new_async(ptr: *const AsyncSignal<T>) -> Self {
         Self {
-            state: AtomicU8::new(LOCKED),
-            ptr: Default::default(),
-            waker: KanalWaker::None,
+            ptr: tag_pointer(ptr as *const ()),
+            _marker: core::marker::PhantomData,
         }
     }
-
-    #[inline(always)]
-    #[cfg(feature = "async")]
-    pub(crate) fn poll(&self) -> Poll<bool> {
-        let v = self.state.load(Ordering::Relaxed);
-        if likely(v < LOCKED) {
-            fence(Ordering::Acquire);
-            Poll::Ready(v == UNLOCKED)
-        } else {
-            Poll::Pending
+    pub(crate) const fn new_sync(ptr: *const SyncSignal<T>) -> Self {
+        Self {
+            ptr: ptr as *const (),
+            _marker: core::marker::PhantomData,
         }
     }
-
-    /// Signal to send data to a writer for specific kanal pointer
+    pub(crate) fn eq_ptr(&self, ptr: *const ()) -> bool {
+        core::ptr::eq(self.ptr, ptr)
+    }
     #[inline(always)]
-    #[cfg(feature = "async")]
-    pub(crate) fn new_async_ptr(ptr: KanalPtr<T>) -> Self {
+    fn resolve(&self) -> PointerResult<T> {
+        #[cfg(feature = "async")]
+        {
+            let (ptr, tagged) = untag_pointer(self.ptr);
+            if tagged {
+                PointerResult::Async(ptr as *const AsyncSignal<T>)
+            } else {
+                PointerResult::Sync(ptr as *const SyncSignal<T>)
+            }
+        }
+        #[cfg(not(feature = "async"))]
+        {
+            PointerResult::Sync(self.ptr as *const SyncSignal<T>)
+        }
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn send(self, data: T) {
+        match self.resolve() {
+            PointerResult::Sync(ptr) => unsafe {
+                SyncSignal::write_data(ptr, data);
+            },
+            #[cfg(feature = "async")]
+            PointerResult::Async(ptr) => unsafe {
+                AsyncSignal::write_data(ptr, data);
+            },
+        }
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn recv(self) -> T {
+        match self.resolve() {
+            PointerResult::Sync(ptr) => unsafe { SyncSignal::read_data(ptr) },
+            #[cfg(feature = "async")]
+            PointerResult::Async(ptr) => unsafe { AsyncSignal::read_data(ptr) },
+        }
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn terminate(&self) {
+        match self.resolve() {
+            PointerResult::Sync(ptr) => unsafe {
+                SyncSignal::terminate(ptr);
+            },
+            #[cfg(feature = "async")]
+            PointerResult::Async(ptr) => unsafe {
+                AsyncSignal::terminate(ptr);
+            },
+        }
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn cancel(&self) {
+        match self.resolve() {
+            PointerResult::Sync(ptr) => unsafe {
+                SyncSignal::cancel(ptr);
+            },
+            #[cfg(feature = "async")]
+            PointerResult::Async(ptr) => unsafe {
+                AsyncSignal::cancel(ptr);
+            },
+        }
+    }
+}
+
+pub struct SyncSignal<T> {
+    state: AtomicUsize,
+    ptr: KanalPtr<T>, //data: UnsafeCell<MaybeUninit<T>>,
+    thread: UnsafeCell<ManuallyDrop<Thread>>,
+    _pinned: core::marker::PhantomPinned,
+}
+
+impl<T> SyncSignal<T> {
+    #[inline(always)]
+    pub(crate) fn new(ptr: KanalPtr<T>) -> Self {
         Self {
-            state: AtomicU8::new(LOCKED),
+            state: AtomicUsize::new(LOCKED),
             ptr,
-            waker: KanalWaker::None,
+            thread: UnsafeCell::new(ManuallyDrop::new(current_thread())),
+            _pinned: core::marker::PhantomPinned,
         }
     }
-
-    /// Returns new sync signal for the provided thread
+    pub(crate) fn get_dynamic_ptr(&self) -> DynamicSignal<T> {
+        DynamicSignal::new_sync(self as *const SyncSignal<T>)
+    }
     #[inline(always)]
-    pub(crate) fn new_sync(ptr: KanalPtr<T>) -> Self {
-        Self {
-            state: AtomicU8::new(LOCKED),
-            ptr,
-            waker: KanalWaker::Sync(None.into()),
+    pub(crate) fn as_tagged_ptr(&self) -> *const () {
+        self as *const Self as *const ()
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn write_data(this: *const Self, data: T) {
+        let thread = ManuallyDrop::take(&mut *(*this).thread.get());
+        unsafe {
+            (*this).ptr.write(data);
+        }
+        if unlikely((*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION) {
+            thread.unpark();
         }
     }
-
-    /// Waits for finishing async signal for a short time
-    #[cfg(feature = "async")]
-    pub(crate) fn async_blocking_wait(&self) -> bool {
-        let v = self.state.load(Ordering::Relaxed);
-        if likely(v < LOCKED) {
-            fence(Ordering::Acquire);
-            return v == UNLOCKED;
+    #[inline(always)]
+    pub(crate) unsafe fn read_data(this: *const Self) -> T {
+        let thread = ManuallyDrop::take(&mut *(*this).thread.get());
+        let r = (*this).ptr.read();
+        if unlikely((*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION) {
+            thread.unpark();
         }
-
-        for _ in 0..32 {
-            backoff::yield_os();
-            let v = self.state.load(Ordering::Relaxed);
-            if likely(v < LOCKED) {
-                fence(Ordering::Acquire);
-                return v == UNLOCKED;
-            }
-        }
-
-        // Usually this part will not happen but you can't be sure
-        let mut sleep_time: u64 = 1 << 10;
-        loop {
-            backoff::sleep(Duration::from_nanos(sleep_time));
-            let v = self.state.load(Ordering::Relaxed);
-            if likely(v < LOCKED) {
-                fence(Ordering::Acquire);
-                return v == UNLOCKED;
-            }
-            // increase sleep_time gradually to 262 microseconds
-            if sleep_time < (1 << 18) {
-                sleep_time <<= 1;
-            }
+        r
+    }
+    pub(crate) fn is_terminated(&self) -> bool {
+        self.state.load(Ordering::Acquire) == TERMINATED
+    }
+    pub(crate) unsafe fn assume_init(&self) -> T {
+        self.ptr.read()
+    }
+    pub(crate) unsafe fn terminate(this: *const Self) {
+        let thread = ManuallyDrop::take(&mut *(*this).thread.get());
+        if unlikely((*this).state.swap(TERMINATED, Ordering::AcqRel) == LOCKED_STARVATION) {
+            thread.unpark();
         }
     }
-
-    /// Waits for the signal event in sync mode,
+    pub(crate) unsafe fn cancel(this: *const Self) {
+        let _ = ManuallyDrop::take(&mut *(*this).thread.get());
+    }
     #[inline(always)]
     pub(crate) fn wait(&self) -> bool {
         let v = self.state.load(Ordering::Relaxed);
-        if likely(v < LOCKED) {
+        if likely(v > LOCKED_STARVATION) {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
@@ -130,7 +198,7 @@ impl<T> Signal<T> {
             for _ in 0..64 {
                 backoff::yield_os();
                 let v = self.state.load(Ordering::Relaxed);
-                if likely(v < LOCKED) {
+                if likely(v > LOCKED_STARVATION) {
                     fence(Ordering::Acquire);
                     return v == UNLOCKED;
                 }
@@ -139,38 +207,27 @@ impl<T> Signal<T> {
                 break;
             }
         }
-        match &self.waker {
-            KanalWaker::Sync(waker) => {
-                // waker is not shared as the state is not `LOCKED_STARVATION`
-                unsafe {
-                    *waker.get() = Some(std::thread::current());
+        match self.state.compare_exchange(
+            LOCKED,
+            LOCKED_STARVATION,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => loop {
+                std::thread::park();
+                let v = self.state.load(Ordering::Relaxed);
+                if likely(v > LOCKED_STARVATION) {
+                    fence(Ordering::Acquire);
+                    return v == UNLOCKED;
                 }
-                match self.state.compare_exchange(
-                    LOCKED,
-                    LOCKED_STARVATION,
-                    Ordering::Release,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => loop {
-                        std::thread::park();
-                        let v = self.state.load(Ordering::Relaxed);
-                        if likely(v < LOCKED) {
-                            fence(Ordering::Acquire);
-                            return v == UNLOCKED;
-                        }
-                    },
-                    Err(v) => v == UNLOCKED,
-                }
-            }
-            #[cfg(feature = "async")]
-            KanalWaker::None | KanalWaker::Async(_) => unreachable!(),
+            },
+            Err(v) => v == UNLOCKED,
         }
     }
-
     /// Waits for the signal event in sync mode with a timeout
     pub(crate) fn wait_timeout(&self, until: Instant) -> bool {
         let v = self.state.load(Ordering::Relaxed);
-        if likely(v < LOCKED) {
+        if likely(v > LOCKED_STARVATION) {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
@@ -182,7 +239,7 @@ impl<T> Signal<T> {
         ) {
             Ok(_) => loop {
                 let v = self.state.load(Ordering::Relaxed);
-                if likely(v < LOCKED) {
+                if likely(v > LOCKED_STARVATION) {
                     fence(Ordering::Acquire);
                     return v == UNLOCKED;
                 }
@@ -195,146 +252,137 @@ impl<T> Signal<T> {
             Err(v) => v == UNLOCKED,
         }
     }
+}
 
-    /// Set pointer to data for receiving or sending
-    #[inline(always)]
-    #[cfg(feature = "async")]
-    pub(crate) fn set_ptr(&mut self, ptr: KanalPtr<T>) {
-        self.ptr = ptr;
-    }
+#[cfg(feature = "async")]
+pub struct AsyncSignal<T> {
+    state: AtomicUsize,
+    data: UnsafeCell<MaybeUninit<T>>,
+    waker: MaybeUninit<Waker>,
+    _pinned: core::marker::PhantomPinned,
+}
 
-    /// Registers the async waker in the Signal
-    #[inline(always)]
-    #[cfg(feature = "async")]
-    pub(crate) fn register_waker(&mut self, waker: &Waker) {
-        self.waker = KanalWaker::Async(waker.clone())
-    }
+#[cfg(feature = "async")]
+pub(crate) enum AsyncSignalResult {
+    Success,
+    Failure,
+    Pending,
+}
 
-    /// Set pointer to data for receiving or sending
+#[cfg(feature = "async")]
+impl<T> AsyncSignal<T> {
     #[inline(always)]
-    #[cfg(feature = "async")]
-    pub(crate) fn will_wake(&self, waker: &Waker) -> bool {
-        match &self.waker {
-            KanalWaker::Async(w) => w.will_wake(waker),
-            KanalWaker::Sync(_) | KanalWaker::None => unreachable!(),
+    pub(crate) const fn new_recv() -> Self {
+        Self {
+            state: AtomicUsize::new(LOCKED),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+            waker: MaybeUninit::uninit(),
+            _pinned: core::marker::PhantomPinned,
         }
     }
-
-    /// Returns true if signal is terminated
-    pub(crate) fn is_terminated(&self) -> bool {
-        self.state.load(Ordering::Relaxed) == TERMINATED
+    #[inline(always)]
+    pub(crate) const fn new_send(data: T) -> Self {
+        Self {
+            state: AtomicUsize::new(LOCKED),
+            data: UnsafeCell::new(MaybeUninit::new(data)),
+            waker: MaybeUninit::uninit(),
+            _pinned: core::marker::PhantomPinned,
+        }
     }
-
-    /// Reads kanal ptr and returns its value
+    #[inline(always)]
+    pub(crate) fn get_dynamic_ptr(&self) -> DynamicSignal<T> {
+        DynamicSignal::new_async(self as *const AsyncSignal<T>)
+    }
+    #[inline(always)]
+    pub(crate) fn as_tagged_ptr(&self) -> *const () {
+        tag_pointer(self as *const Self as *const ())
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn will_wake(&self, waker: &Waker) -> bool {
+        (&*self.waker.as_ptr()).will_wake(waker)
+    }
+    pub(crate) fn result(&self) -> AsyncSignalResult {
+        let v = self.state.load(Ordering::Acquire);
+        if likely(v == UNLOCKED) {
+            AsyncSignalResult::Success
+        } else if v == TERMINATED {
+            AsyncSignalResult::Failure
+        } else {
+            AsyncSignalResult::Pending
+        }
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn write_data(this: *const Self, data: T) {
+        let waker = (*this).waker.as_ptr().read();
+        (*this).data.get().write(MaybeUninit::new(data));
+        (*this).state.store(UNLOCKED, Ordering::Release);
+        waker.wake();
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn read_data(this: *const Self) -> T {
+        let waker = (*this).waker.as_ptr().read();
+        let data = (*this).data.get().read().assume_init();
+        (*this).state.store(UNLOCKED, Ordering::Release);
+        waker.wake();
+        data
+    }
+    pub(crate) unsafe fn cancel(this: *const Self) {
+        let _ = (*this).waker.as_ptr().read();
+    }
     pub(crate) unsafe fn assume_init(&self) -> T {
-        self.ptr.read()
+        unsafe { self.data.get().read().assume_init() }
     }
+    pub(crate) unsafe fn terminate(this: *const Self) {
+        let waker = (*this).waker.as_ptr().read();
+        (*this).state.store(TERMINATED, Ordering::Release);
+        waker.wake();
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn init_waker(&mut self, waker: Waker) {
+        self.waker.as_mut_ptr().write(waker);
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn register_waker(&mut self, waker: Waker) {
+        let waker_ptr = self.waker.as_mut_ptr();
+        waker_ptr.drop_in_place();
+        waker_ptr.write(waker);
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn drop_data(&mut self) {
+        let ptr = self.data.get();
+        (&mut *ptr).as_mut_ptr().drop_in_place();
+    }
+    #[inline(never)]
+    #[cold]
+    pub(crate) fn blocking_wait(&self) -> bool {
+        let v = self.state.load(Ordering::Relaxed);
+        if likely(v > LOCKED_STARVATION) {
+            fence(Ordering::Acquire);
+            return v == UNLOCKED;
+        }
 
-    /// Wakes the sleeping thread or coroutine
-    unsafe fn wake(this: *const Self, state: u8) {
-        match &(*this).waker {
-            KanalWaker::Sync(waker) => {
-                if (*this)
-                    .state
-                    .compare_exchange(LOCKED, state, Ordering::Release, Ordering::Acquire)
-                    .is_err()
-                {
-                    if let Some(thread) = (*waker.get()).as_ref() {
-                        let thread = thread.clone();
-                        (*this).state.store(state, Ordering::Release);
-                        thread.unpark();
-                    }
-                }
+        for _ in 0..32 {
+            backoff::yield_os();
+            let v = self.state.load(Ordering::Relaxed);
+            if likely(v > LOCKED_STARVATION) {
+                fence(Ordering::Acquire);
+                return v == UNLOCKED;
             }
-            #[cfg(feature = "async")]
-            KanalWaker::Async(w) => {
-                let w = w.clone();
-                (*this).state.store(state, Ordering::Release);
-                w.wake();
+        }
+
+        // Usually this part will not happen but you can't be sure
+        let mut sleep_time: u64 = 1 << 10;
+        loop {
+            backoff::sleep(Duration::from_nanos(sleep_time));
+            let v = self.state.load(Ordering::Relaxed);
+            if likely(v > LOCKED_STARVATION) {
+                fence(Ordering::Acquire);
+                return v == UNLOCKED;
             }
-            #[cfg(feature = "async")]
-            KanalWaker::None => unreachable!(),
+            // increase sleep_time gradually to 262 microseconds
+            if sleep_time < (1 << 18) {
+                sleep_time <<= 1;
+            }
         }
     }
-
-    /// Sends object to receive signal
-    /// Safety: it's only safe to be called only once on the receive signals
-    /// that are not terminated
-    pub(crate) unsafe fn send(this: *const Self, d: T) {
-        (*this).ptr.write(d);
-        Self::wake(this, UNLOCKED);
-    }
-
-    /// Sends object to receive signal by coping the pointer
-    /// Safety: it's only safe to be called only once on the receive signals
-    /// that are not terminated
-    #[allow(unused)]
-    pub(crate) unsafe fn send_copy(this: *const Self, d: *const T) {
-        (*this).ptr.copy(d);
-        Self::wake(this, UNLOCKED);
-    }
-
-    /// Receives object from send signal
-    /// Safety: it's only safe to be called only once on send signals that are
-    /// not terminated
-    pub(crate) unsafe fn recv(this: *const Self) -> T {
-        let r = (*this).ptr.read();
-        Self::wake(this, UNLOCKED);
-        r
-    }
-
-    /// Terminates the signal and notifies its waiter
-    /// Safety: it's only safe to be called only once on send/receive signals
-    /// that are not finished or terminated
-    pub(crate) unsafe fn terminate(this: *const Self) {
-        Self::wake(this, TERMINATED);
-    }
-
-    /// Loads pointer data and drops it in place
-    /// Safety: it should only be used once, and only when data in ptr is valid
-    /// and not moved.
-    #[cfg(feature = "async")]
-    pub(crate) unsafe fn load_and_drop(&self) {
-        _ = self.ptr.read();
-    }
-
-    /// Returns signal terminator for other side of channel
-    pub(crate) fn get_terminator(&self) -> SignalTerminator<T> {
-        (self as *const Signal<T>).into()
-    }
 }
-
-pub(crate) struct SignalTerminator<T>(*const Signal<T>);
-
-impl<T> From<*const Signal<T>> for SignalTerminator<T> {
-    fn from(value: *const Signal<T>) -> Self {
-        Self(value)
-    }
-}
-
-impl<T> SignalTerminator<T> {
-    pub(crate) unsafe fn send(self, data: T) {
-        Signal::send(self.0, data)
-    }
-    #[allow(unused)]
-    pub(crate) unsafe fn send_copy(self, data: *const T) {
-        Signal::send_copy(self.0, data)
-    }
-    pub(crate) unsafe fn recv(self) -> T {
-        Signal::recv(self.0)
-    }
-    pub(crate) unsafe fn terminate(&self) {
-        Signal::terminate(self.0)
-    }
-}
-
-impl<T> PartialEq<Signal<T>> for SignalTerminator<T> {
-    fn eq(&self, other: &Signal<T>) -> bool {
-        core::ptr::eq(self.0, other as *const Signal<T>)
-    }
-}
-
-// If internal<T> is safe to send SignalPtr<T> is safe to send.
-unsafe impl<T: Send> Send for SignalTerminator<T> {}
-// If internal<T> is safe to send Signal<T> is safe to send.
-unsafe impl<T: Send> Send for Signal<T> {}
