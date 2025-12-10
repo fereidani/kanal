@@ -1,75 +1,79 @@
 #![forbid(unsafe_code)]
-use core::fmt;
-use core::fmt::Debug;
+use core::{fmt, fmt::Debug};
+
 /// Error type for channel send operations without timeout
-#[derive(Debug, PartialEq, Eq)]
-pub enum SendError {
-    /// Indicates that the channel is closed on both sides with
-    /// call to `close()`
-    Closed,
-    /// Indicates that all receiver instances are dropped and the channel is
-    /// closed from the receive side
-    ReceiveClosed,
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub struct SendError<T>(pub T);
+
+impl<T> Debug for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "SendError(...)")
+    }
 }
-impl std::error::Error for SendError {}
-impl fmt::Display for SendError {
+impl<T> fmt::Display for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt("send to a closed channel", f)
+    }
+}
+
+impl<T> SendError<T> {
+    /// Consumes the error and returns the contained value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> std::error::Error for SendError<T> {}
+
+/// Error type for channel send operations with timeout
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum SendTimeoutError<T> {
+    /// Indicates that the channel is closed on both sides with a call to
+    /// `close()`
+    Closed(T),
+    /// Indicates that channel operation reached timeout and is canceled
+    Timeout(T),
+}
+
+impl<T> Debug for SendTimeoutError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SendTimeoutError::Closed(_) => write!(f, "Closed(...)"),
+            SendTimeoutError::Timeout(_) => write!(f, "Timeout(...)"),
+        }
+    }
+}
+impl<T> fmt::Display for SendTimeoutError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(
             match *self {
-                SendError::Closed => "send to a closed channel",
-                SendError::ReceiveClosed => "send to a half closed channel",
+                SendTimeoutError::Closed(_) => "send to a closed channel",
+                SendTimeoutError::Timeout(_) => "send timeout",
             },
             f,
         )
     }
 }
 
-/// Error type for channel send operations with timeout
-#[derive(Debug, PartialEq, Eq)]
-pub enum SendErrorTimeout {
-    /// Indicates that the channel is closed on both sides with a call to
-    /// `close()`
-    Closed,
-    /// Indicates that all receiver instances are dropped and the channel is
-    /// closed from the receive side
-    ReceiveClosed,
-    /// Indicates that channel operation reached timeout and is canceled
-    Timeout,
-}
-impl core::error::Error for SendErrorTimeout {}
-impl fmt::Display for SendErrorTimeout {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(
-            match *self {
-                SendErrorTimeout::Closed => "send to a closed channel",
-                SendErrorTimeout::ReceiveClosed => "send to a half closed channel",
-                SendErrorTimeout::Timeout => "send timeout",
-            },
-            f,
-        )
+impl<T> SendTimeoutError<T> {
+    /// Consumes the error and returns the contained value.
+    pub fn into_inner(self) -> T {
+        match self {
+            SendTimeoutError::Closed(value) => value,
+            SendTimeoutError::Timeout(value) => value,
+        }
     }
 }
+
+impl<T> std::error::Error for SendTimeoutError<T> {}
 
 /// Error type for channel receive operations without timeout
 #[derive(Debug, PartialEq, Eq)]
-pub enum ReceiveError {
-    /// Indicates that the channel is closed on both sides with a call to
-    /// `close()`
-    Closed,
-    /// Indicates that all sender instances are dropped and the channel is
-    /// closed from the send side
-    SendClosed,
-}
+pub struct ReceiveError();
 impl core::error::Error for ReceiveError {}
 impl fmt::Display for ReceiveError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(
-            match *self {
-                ReceiveError::Closed => "receive from a closed channel",
-                ReceiveError::SendClosed => "receive from a half closed channel",
-            },
-            f,
-        )
+        fmt::Display::fmt("receive from a closed channel", f)
     }
 }
 
@@ -79,9 +83,6 @@ pub enum ReceiveErrorTimeout {
     /// Indicates that the channel is closed on both sides with a call to
     /// `close()`
     Closed,
-    /// Indicates that all sender instances are dropped and the channel is
-    /// closed from the send side
-    SendClosed,
     /// Indicates that channel operation reached timeout and is canceled
     Timeout,
 }
@@ -91,7 +92,6 @@ impl fmt::Display for ReceiveErrorTimeout {
         fmt::Display::fmt(
             match *self {
                 ReceiveErrorTimeout::Closed => "receive from a closed channel",
-                ReceiveErrorTimeout::SendClosed => "receive from a half closed channel",
                 ReceiveErrorTimeout::Timeout => "receive timeout",
             },
             f,
