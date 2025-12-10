@@ -326,6 +326,7 @@ impl<T> AsyncSignal<T> {
         waker.wake();
         data
     }
+    // Drops waker without waking
     pub(crate) unsafe fn cancel(this: *const Self) {
         let _ = (*this).waker.as_ptr().read();
     }
