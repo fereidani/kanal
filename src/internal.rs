@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std-mutex"))]
 use crate::mutex::{Mutex, MutexGuard};
-use crate::signal::{Signal, SignalTerminator};
+use crate::signal::DynamicSignal;
 extern crate alloc;
 use alloc::collections::VecDeque;
 use branches::unlikely;
@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 
 pub(crate) struct Internal<T> {
     /// The internal channel object
-    internal: *mut Mutex<ChannelInternal<T>>,
+    internal: *mut (Mutex<ChannelInternal<T>>, usize),
 }
 
 // Mutex is sync and send, so we can send it across threads
@@ -36,14 +36,19 @@ impl<T> Internal<T> {
             wait_list: VecDeque::with_capacity(wait_list_size),
             recv_count: 1,
             send_count: 1,
-            capacity: abstract_capacity,
             // always has the default one sender and one receiver
             ref_count: 2,
         };
 
         Internal {
-            internal: Box::into_raw(Box::new(Mutex::new(ret))),
+            internal: Box::into_raw(Box::new((Mutex::new(ret), abstract_capacity))),
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn capacity(&self) -> usize {
+        // SAFETY: capacity is stored alongside the internal mutex as a read only data
+        unsafe { (*self.internal).1 }
     }
 
     #[inline(always)]
@@ -91,7 +96,7 @@ impl<T> Internal<T> {
 impl<T> core::ops::Deref for Internal<T> {
     type Target = Mutex<ChannelInternal<T>>;
     fn deref(&self) -> &Self::Target {
-        unsafe { &(*self.internal) }
+        unsafe { &(*self.internal).0 }
     }
 }
 
@@ -127,9 +132,7 @@ pub(crate) struct ChannelInternal<T> {
     pub(crate) recv_blocking: bool,
     /// Receive and Send waitlist for when the channel queue is empty or zero
     /// capacity for recv or full for send.
-    pub(crate) wait_list: VecDeque<SignalTerminator<T>>,
-    /// The capacity of the channel buffer
-    pub(crate) capacity: usize,
+    pub(crate) wait_list: VecDeque<DynamicSignal<T>>,
     /// Count of alive receivers
     pub(crate) recv_count: u32,
     /// Count of alive senders
@@ -152,7 +155,7 @@ impl<T> ChannelInternal<T> {
 
     /// Returns next signal for sender from the waitlist
     #[inline(always)]
-    pub(crate) fn next_send(&mut self) -> Option<SignalTerminator<T>> {
+    pub(crate) fn next_send(&mut self) -> Option<DynamicSignal<T>> {
         if self.recv_blocking {
             return None;
         }
@@ -165,15 +168,15 @@ impl<T> ChannelInternal<T> {
         }
     }
 
-    /// Adds new sender signal to the waitlist
+    /// Adds new sender/receiver signal to the waitlist
     #[inline(always)]
-    pub(crate) fn push_send(&mut self, s: SignalTerminator<T>) {
+    pub(crate) fn push_signal(&mut self, s: DynamicSignal<T>) {
         self.wait_list.push_back(s);
     }
 
     /// Returns the next signal for the receiver in the waitlist
     #[inline(always)]
-    pub(crate) fn next_recv(&mut self) -> Option<SignalTerminator<T>> {
+    pub(crate) fn next_recv(&mut self) -> Option<DynamicSignal<T>> {
         if !self.recv_blocking {
             return None;
         }
@@ -186,18 +189,12 @@ impl<T> ChannelInternal<T> {
         }
     }
 
-    /// Adds new receiver signal to the waitlist
-    #[inline(always)]
-    pub(crate) fn push_recv(&mut self, s: SignalTerminator<T>) {
-        self.wait_list.push_back(s);
-    }
-
     /// Tries to remove the send signal from the waitlist, returns true if the
     /// operation was successful
-    pub(crate) fn cancel_send_signal(&mut self, sig: &Signal<T>) -> bool {
+    pub(crate) fn cancel_send_signal(&mut self, sig: *const ()) -> bool {
         if !self.recv_blocking {
             for (i, send) in self.wait_list.iter().enumerate() {
-                if send.eq(sig) {
+                if send.eq_ptr(sig) {
                     self.wait_list.remove(i);
                     return true;
                 }
@@ -208,10 +205,10 @@ impl<T> ChannelInternal<T> {
 
     /// Tries to remove the received signal from the waitlist, returns true if
     /// the operation was successful
-    pub(crate) fn cancel_recv_signal(&mut self, sig: &Signal<T>) -> bool {
+    pub(crate) fn cancel_recv_signal(&mut self, sig: *const ()) -> bool {
         if self.recv_blocking {
             for (i, recv) in self.wait_list.iter().enumerate() {
-                if recv.eq(sig) {
+                if recv.eq_ptr(sig) {
                     self.wait_list.remove(i);
                     return true;
                 }
@@ -222,10 +219,10 @@ impl<T> ChannelInternal<T> {
 
     /// checks if send signal exists in wait list
     #[cfg(feature = "async")]
-    pub(crate) fn send_signal_exists(&self, sig: &Signal<T>) -> bool {
+    pub(crate) fn send_signal_exists(&self, sig: *const ()) -> bool {
         if !self.recv_blocking {
             for signal in self.wait_list.iter() {
-                if signal.eq(sig) {
+                if signal.eq_ptr(sig) {
                     return true;
                 }
             }
@@ -235,10 +232,10 @@ impl<T> ChannelInternal<T> {
 
     /// checks if receive signal exists in wait list
     #[cfg(feature = "async")]
-    pub(crate) fn recv_signal_exists(&self, sig: &Signal<T>) -> bool {
+    pub(crate) fn recv_signal_exists(&self, sig: *const ()) -> bool {
         if self.recv_blocking {
             for signal in self.wait_list.iter() {
-                if signal.eq(sig) {
+                if signal.eq_ptr(sig) {
                     return true;
                 }
             }
@@ -271,8 +268,9 @@ impl<T> ChannelInternal<T> {
             }
         } else if self.recv_count > 0 {
             self.recv_count -= 1;
-            if self.recv_count == 0 && self.send_count != 0 {
+            if self.recv_count == 0 {
                 self.terminate_signals();
+                self.queue.clear();
             }
         }
         self.ref_count -= 1;
