@@ -93,11 +93,6 @@ pub fn randomize(d: usize) -> usize {
     d - (d >> 3) + random_u32() as usize % (d >> 2)
 }
 
-// Static atomic variable used to store the degree of parallelism.
-// Initialized to 0, meaning that the parallelism degree has not been computed
-// yet.
-static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
-
 /// Retrieves the available degree of parallelism.
 /// If the degree of parallelism has not been computed yet, it computes and
 /// stores it in the PARALLELISM atomic variable. The degree of parallelism
@@ -105,13 +100,14 @@ static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
 /// threads concurrently.
 #[inline(always)]
 pub fn get_parallelism() -> usize {
+    static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
     let mut p = PARALLELISM.load(Ordering::Relaxed);
     // If the parallelism degree has not been computed yet.
-    if p == 0 {
+    if unlikely(p == 0) {
         // Try to get the degree of parallelism from available_parallelism.
         // If it is not available, default to 1.
         p = usize::from(thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()));
-        PARALLELISM.store(p, Ordering::SeqCst);
+        PARALLELISM.store(p, Ordering::Release);
     }
     // Return the computed degree of parallelism.
     p
@@ -220,7 +216,8 @@ macro_rules! return_if_some {
     }};
 }
 
-/// Computes a future timeout instant by adding a specified number of microseconds to the current time.
+/// Computes a future timeout instant by adding a specified number of
+/// microseconds to the current time.
 ///
 /// # Parameters
 /// - `spin_micros`: The number of microseconds to add to the current time.
@@ -229,7 +226,8 @@ macro_rules! return_if_some {
 /// A [`std::time::Instant`] indicating when the timeout will occur.
 ///
 /// # Panics
-/// This function will panic if the addition of the duration results in an overflow.
+/// This function will panic if the addition of the duration results in an
+/// overflow.
 #[inline(always)]
 #[allow(dead_code)]
 pub(crate) fn spin_option_yield_only<T>(
