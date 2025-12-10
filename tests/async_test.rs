@@ -65,6 +65,28 @@ mod asyncs {
                 assert_eq!(rx.recv().await.unwrap(), $zero);
                 assert_eq!(rx.recv().await.unwrap(), $ones);
             }
+            let (tx, rx) = new(Some(1));
+            tokio::spawn(async move {
+                for _ in 0..MESSAGES {
+                    tx.send($zero).await.unwrap();
+                    tx.send($ones).await.unwrap();
+                }
+            });
+            for _ in 0..MESSAGES {
+                assert_eq!(rx.recv().await.unwrap(), $zero);
+                assert_eq!(rx.recv().await.unwrap(), $ones);
+            }
+            let (tx, rx) = new(None);
+            tokio::spawn(async move {
+                for _ in 0..MESSAGES {
+                    tx.send($zero).await.unwrap();
+                    tx.send($ones).await.unwrap();
+                }
+            });
+            for _ in 0..MESSAGES {
+                assert_eq!(rx.recv().await.unwrap(), $zero);
+                assert_eq!(rx.recv().await.unwrap(), $ones);
+            }
         };
     }
 

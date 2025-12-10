@@ -86,6 +86,34 @@ macro_rules! integrity_test {
             }
         })
         .unwrap();
+        let (tx, rx) = new(Some(1));
+        crossbeam::scope(|scope| {
+            scope.spawn(|_| {
+                for _ in 0..MESSAGES {
+                    tx.send($zero).unwrap();
+                    tx.send($ones).unwrap();
+                }
+            });
+            for _ in 0..MESSAGES {
+                assert_eq!(rx.recv().unwrap(), $zero);
+                assert_eq!(rx.recv().unwrap(), $ones);
+            }
+        })
+        .unwrap();
+        let (tx, rx) = new(None);
+        crossbeam::scope(|scope| {
+            scope.spawn(|_| {
+                for _ in 0..MESSAGES {
+                    tx.send($zero).unwrap();
+                    tx.send($ones).unwrap();
+                }
+            });
+            for _ in 0..MESSAGES {
+                assert_eq!(rx.recv().unwrap(), $zero);
+                assert_eq!(rx.recv().unwrap(), $ones);
+            }
+        })
+        .unwrap();
     };
 }
 
