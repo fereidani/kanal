@@ -70,7 +70,7 @@ impl<T> DynamicSignal<T> {
         {
             let (ptr, tagged) = untag_pointer(self.ptr);
             if tagged {
-                PointerResult::Async(ptr as *const AsyncSignal<T>)
+                PointerResult::Async(ptr)
             } else {
                 PointerResult::Sync(ptr as *const SyncSignal<T>)
             }
