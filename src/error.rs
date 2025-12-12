@@ -7,7 +7,7 @@ pub struct SendError<T>(pub T);
 
 impl<T> Debug for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "SendError(...)")
+        write!(f, "SendError(..)")
     }
 }
 impl<T> fmt::Display for SendError<T> {
@@ -18,6 +18,7 @@ impl<T> fmt::Display for SendError<T> {
 
 impl<T> SendError<T> {
     /// Consumes the error and returns the contained value.
+    #[inline]
     pub fn into_inner(self) -> T {
         self.0
     }
@@ -38,8 +39,8 @@ pub enum SendTimeoutError<T> {
 impl<T> Debug for SendTimeoutError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            SendTimeoutError::Closed(_) => write!(f, "Closed(...)"),
-            SendTimeoutError::Timeout(_) => write!(f, "Timeout(...)"),
+            SendTimeoutError::Closed(..) => write!(f, "Closed(..)"),
+            SendTimeoutError::Timeout(..) => write!(f, "Timeout(..)"),
         }
     }
 }
@@ -47,8 +48,8 @@ impl<T> fmt::Display for SendTimeoutError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(
             match *self {
-                SendTimeoutError::Closed(_) => "send to a closed channel",
-                SendTimeoutError::Timeout(_) => "send timeout",
+                SendTimeoutError::Closed(..) => "send to a closed channel",
+                SendTimeoutError::Timeout(..) => "send timeout",
             },
             f,
         )
@@ -57,6 +58,7 @@ impl<T> fmt::Display for SendTimeoutError<T> {
 
 impl<T> SendTimeoutError<T> {
     /// Consumes the error and returns the contained value.
+    #[inline]
     pub fn into_inner(self) -> T {
         match self {
             SendTimeoutError::Closed(value) => value,
@@ -102,7 +104,7 @@ impl fmt::Display for ReceiveErrorTimeout {
 /// Error type for closing a channel when channel is already closed
 #[derive(Debug, PartialEq, Eq)]
 pub struct CloseError();
-impl core::error::Error for CloseError {}
+impl std::error::Error for CloseError {}
 impl fmt::Display for CloseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt("channel is already closed", f)
