@@ -1,3 +1,4 @@
+#[cfg(feature = "async")]
 mod utils;
 #[cfg(feature = "async")]
 mod asyncs {

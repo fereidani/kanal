@@ -1,12 +1,12 @@
 use crate::{backoff, pointer::KanalPtr};
-#[cfg(feature = "async")]
-use core::task::Waker;
 use core::{
     cell::UnsafeCell,
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::ManuallyDrop,
     sync::atomic::{fence, AtomicUsize, Ordering},
     time::Duration,
 };
+#[cfg(feature = "async")]
+use core::{mem::MaybeUninit, task::Waker};
 use std::{
     thread::{current as current_thread, Thread},
     time::Instant,
@@ -20,6 +20,7 @@ const TERMINATED: usize = !0 - 1;
 const UNLOCKED: usize = !0;
 
 #[inline(always)]
+#[cfg(feature = "async")]
 fn tag_pointer<T>(ptr: *const T) -> *const () {
     debug_assert!(
         (ptr.addr() & 1) == 0,
@@ -29,6 +30,7 @@ fn tag_pointer<T>(ptr: *const T) -> *const () {
 }
 
 #[inline(always)]
+#[cfg(feature = "async")]
 fn untag_pointer<T>(ptr: *const ()) -> (*const T, bool) {
     let is_tagged = (ptr.addr() & 1) == 1;
     let untagged = ptr.map_addr(|addr| addr & !1).cast::<T>();
@@ -294,6 +296,7 @@ impl<T> AsyncSignal<T> {
         DynamicSignal::new_async(self as *const AsyncSignal<T>)
     }
     #[inline(always)]
+    #[cfg(feature = "async")]
     pub(crate) fn as_tagged_ptr(&self) -> *const () {
         tag_pointer(self as *const Self as *const ())
     }
