@@ -271,14 +271,14 @@ mod asyncs {
     async fn recv_from_half_closed_channel() {
         let (tx, rx) = new::<u64>(Some(1));
         drop(tx);
-        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::SendClosed);
+        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError());
     }
 
     #[tokio::test]
     async fn recv_from_closed_channel() {
         let (tx, rx) = new::<u64>(Some(1));
         tx.close().unwrap();
-        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::Closed);
+        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError());
     }
 
     #[tokio::test]
@@ -287,24 +287,27 @@ mod asyncs {
         tx.send(Box::new(1)).await.unwrap();
         tx.close().unwrap();
         // it's not possible to read data from queue of fully closed channel
-        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError::Closed);
+        assert_eq!(rx.recv().await.err().unwrap(), ReceiveError());
     }
 
     #[tokio::test]
     async fn send_to_half_closed_channel() {
         let (tx, rx) = new(Some(1));
         drop(rx);
-        assert_eq!(
+        assert!(matches!(
             tx.send(Box::new(1)).await.err().unwrap(),
-            SendError::ReceiveClosed
-        );
+            SendError(_)
+        ));
     }
 
     #[tokio::test]
     async fn send_to_closed_channel() {
         let (tx, rx) = new(Some(1));
         rx.close().unwrap();
-        assert_eq!(tx.send(Box::new(1)).await.err().unwrap(), SendError::Closed);
+        assert!(matches!(
+            tx.send(Box::new(1)).await.err().unwrap(),
+            SendError(_)
+        ));
     }
 
     // Drop tests

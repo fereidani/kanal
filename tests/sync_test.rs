@@ -349,14 +349,14 @@ fn drain_into_test_zero_sized() {
 fn recv_from_half_closed_channel() {
     let (tx, rx) = new::<u64>(Some(1));
     drop(tx);
-    assert_eq!(rx.recv().err().unwrap(), ReceiveError::SendClosed);
+    assert_eq!(rx.recv().err().unwrap(), ReceiveError());
 }
 
 #[test]
 fn recv_from_closed_channel() {
     let (tx, rx) = new::<u64>(Some(1));
     tx.close().unwrap();
-    assert_eq!(rx.recv().err().unwrap(), ReceiveError::Closed);
+    assert_eq!(rx.recv().err().unwrap(), ReceiveError());
 }
 
 #[test]
@@ -365,24 +365,21 @@ fn recv_from_closed_channel_queue() {
     tx.send(Box::new(1)).unwrap();
     tx.close().unwrap();
     // it's not possible to read data from queue of fully closed channel
-    assert_eq!(rx.recv().err().unwrap(), ReceiveError::Closed);
+    assert_eq!(rx.recv().err().unwrap(), ReceiveError());
 }
 
 #[test]
 fn send_to_half_closed_channel() {
     let (tx, rx) = new(Some(1));
     drop(rx);
-    assert_eq!(
-        tx.send(Box::new(1)).err().unwrap(),
-        SendError::ReceiveClosed
-    );
+    assert!(matches!(tx.send(Box::new(1)).err().unwrap(), SendError(_)));
 }
 
 #[test]
 fn send_to_closed_channel() {
     let (tx, rx) = new(Some(1));
     rx.close().unwrap();
-    assert_eq!(tx.send(Box::new(1)).err().unwrap(), SendError::Closed);
+    assert!(matches!(tx.send(Box::new(1)).err().unwrap(), SendError(_)));
 }
 
 // Channel drop tests
