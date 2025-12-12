@@ -20,7 +20,7 @@ pub use future::*;
 use core::mem::transmute;
 use core::{
     fmt,
-    mem::{needs_drop, size_of, MaybeUninit},
+    mem::{size_of, MaybeUninit},
     time::Duration,
 };
 use std::time::Instant;
@@ -108,6 +108,16 @@ impl<T> fmt::Debug for AsyncSender<T> {
     }
 }
 
+macro_rules! check_recv_closed_timeout {
+    ($internal:ident,$data:ident) => {
+        if unlikely($internal.recv_count == 0) {
+            // Avoid wasting lock time on dropping failed send object
+            drop($internal);
+            return Err(SendTimeoutError::Closed($data));
+        }
+    };
+}
+
 macro_rules! shared_impl {
     () => {
         /// Returns whether the channel is bounded or not.
@@ -125,7 +135,7 @@ macro_rules! shared_impl {
         /// assert_eq!(r.is_bounded(),false);
         /// ```
         pub fn is_bounded(&self) -> bool {
-            acquire_internal(&self.internal).capacity != usize::MAX
+            self.internal.capacity() != usize::MAX
         }
         /// Returns length of the queue.
         ///
@@ -167,8 +177,7 @@ macro_rules! shared_impl {
         /// assert_eq!(r.is_full(),true);
         /// ```
         pub fn is_full(&self) -> bool {
-            let internal = acquire_internal(&self.internal);
-            internal.capacity == internal.queue.len()
+            self.internal.capacity() == acquire_internal(&self.internal).queue.len()
         }
         /// Returns capacity of channel (not the queue)
         /// for unbounded channels, it will return usize::MAX.
@@ -186,7 +195,7 @@ macro_rules! shared_impl {
         /// assert_eq!(r.capacity(),usize::MAX);
         /// ```
         pub fn capacity(&self) -> usize {
-            acquire_internal(&self.internal).capacity
+            self.internal.capacity()
         }
         /// Returns count of alive receiver instances of the channel.
         ///
@@ -270,7 +279,7 @@ macro_rules! shared_send_impl {
         /// let (s, r) = kanal::bounded(0);
         /// let t=spawn( move || {
         ///     loop{
-        ///         if s.try_send(1).unwrap(){
+        ///         if s.try_send(1).is_ok() {
         ///             break;
         ///         }
         ///     }
@@ -280,78 +289,21 @@ macro_rules! shared_send_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send(&self, data: T) -> Result<bool, SendError> {
+        pub fn try_send(&self, data: T) -> Result<(), SendTimeoutError<T>> {
+            let cap = self.internal.capacity();
             let mut internal = acquire_internal(&self.internal);
-            if unlikely(internal.recv_count == 0) {
-                let send_count = internal.send_count;
-                // Avoid wasting lock time on dropping failed send object
-                drop(internal);
-                if send_count == 0 {
-                    return Err(SendError::Closed);
-                }
-                return Err(SendError::ReceiveClosed);
-            }
+            check_recv_closed_timeout!(internal, data);
             if let Some(first) = internal.next_recv() {
                 drop(internal);
-                // Safety: it's safe to send to owned signal once
+                // SAFETY: it's safe to send to owned signal once
                 unsafe { first.send(data) }
-                return Ok(true);
-            } else if internal.queue.len() < internal.capacity {
+                return Ok(());
+            }
+            if cap > 0 && internal.queue.len() < cap {
                 internal.queue.push_back(data);
-                return Ok(true);
+                return Ok(());
             }
-            Ok(false)
-        }
-
-        /// Tries sending to the channel without waiting on the waitlist, if
-        /// send fails then the object will be dropped. It returns `Ok(true)` in
-        /// case of a successful operation and `Ok(false)` for a failed one, or
-        /// error in case that channel is closed. Important note: this function
-        /// is not lock-free as it acquires a mutex guard of the channel
-        /// internal for a short time.
-        ///
-        /// # Examples
-        ///
-        /// ```
-        /// # use std::thread::spawn;
-        /// let (s, r) = kanal::bounded(0);
-        /// let t=spawn( move || {
-        ///     let mut opt=Some(1);
-        ///     loop{
-        ///         if s.try_send_option(&mut opt).unwrap(){
-        ///             break;
-        ///         }
-        ///     }
-        /// });
-        /// assert_eq!(r.recv()?,1);
-        /// # t.join();
-        /// # anyhow::Ok(())
-        /// ```
-        #[inline(always)]
-        pub fn try_send_option(&self, data: &mut Option<T>) -> Result<bool, SendError> {
-            if unlikely(data.is_none()) {
-                panic!("send data option is None");
-            }
-            let mut internal = acquire_internal(&self.internal);
-            if unlikely(internal.recv_count == 0) {
-                let send_count = internal.send_count;
-                // Avoid wasting lock time on dropping failed send object
-                drop(internal);
-                if send_count == 0 {
-                    return Err(SendError::Closed);
-                }
-                return Err(SendError::ReceiveClosed);
-            }
-            if let Some(first) = internal.next_recv() {
-                drop(internal);
-                // Safety: it's safe to send to owned signal once
-                unsafe { first.send(data.take().unwrap()) }
-                return Ok(true);
-            } else if internal.queue.len() < internal.capacity {
-                internal.queue.push_back(data.take().unwrap());
-                return Ok(true);
-            }
-            Ok(false)
+            Err(SendTimeoutError::Timeout(data))
         }
 
         /// Tries sending to the channel without waiting on the waitlist or for
@@ -368,7 +320,7 @@ macro_rules! shared_send_impl {
         /// let (s, r) = kanal::bounded(0);
         /// let t=spawn( move || {
         ///     loop{
-        ///         if s.try_send_realtime(1).unwrap(){
+        ///         if s.try_send_realtime(1).is_ok() {
         ///             break;
         ///         }
         ///     }
@@ -378,80 +330,22 @@ macro_rules! shared_send_impl {
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send_realtime(&self, data: T) -> Result<bool, SendError> {
+        pub fn try_send_realtime(&self, data: T) -> Result<(), SendTimeoutError<T>> {
+            let cap = self.internal.capacity();
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if unlikely(internal.recv_count == 0) {
-                    let send_count = internal.send_count;
-                    // Avoid wasting lock time on dropping failed send object
-                    drop(internal);
-                    if send_count == 0 {
-                        return Err(SendError::Closed);
-                    }
-                    return Err(SendError::ReceiveClosed);
-                }
+                check_recv_closed_timeout!(internal, data);
                 if let Some(first) = internal.next_recv() {
                     drop(internal);
-                    // Safety: it's safe to send to owned signal once
+                    // SAFETY: it's safe to send to owned signal once
                     unsafe { first.send(data) }
-                    return Ok(true);
-                } else if internal.queue.len() < internal.capacity {
+                    return Ok(());
+                }
+                if cap > 0 && internal.queue.len() < cap {
                     internal.queue.push_back(data);
-                    return Ok(true);
+                    return Ok(());
                 }
             }
-            Ok(false)
-        }
-
-        /// Tries sending to the channel without waiting on the waitlist or
-        /// channel internal lock. It returns `Ok(true)` in case of a successful
-        /// operation and `Ok(false)` for a failed one, or error in case that
-        /// channel is closed. This function will `panic` on successful send
-        /// attempt of `None` data. Do not use this function unless you know
-        /// exactly what you are doing.
-        ///
-        /// # Examples
-        ///
-        /// ```
-        /// # use std::thread::spawn;
-        /// let (s, r) = kanal::bounded(0);
-        /// let t=spawn( move || {
-        ///     let mut opt=Some(1);
-        ///     loop{
-        ///         if s.try_send_option_realtime(&mut opt).unwrap(){
-        ///             break;
-        ///         }
-        ///     }
-        /// });
-        /// assert_eq!(r.recv()?,1);
-        /// # t.join();
-        /// # anyhow::Ok(())
-        /// ```
-        #[inline(always)]
-        pub fn try_send_option_realtime(&self, data: &mut Option<T>) -> Result<bool, SendError> {
-            if data.is_none() {
-                panic!("send data option is None");
-            }
-            if let Some(mut internal) = try_acquire_internal(&self.internal) {
-                if unlikely(internal.recv_count == 0) {
-                    let send_count = internal.send_count;
-                    // Avoid wasting lock time on dropping failed send object
-                    drop(internal);
-                    if send_count == 0 {
-                        return Err(SendError::Closed);
-                    }
-                    return Err(SendError::ReceiveClosed);
-                }
-                if let Some(first) = internal.next_recv() {
-                    drop(internal);
-                    // Safety: it's safe to send to owned signal once
-                    unsafe { first.send(data.take().unwrap()) }
-                    return Ok(true);
-                } else if internal.queue.len() < internal.capacity {
-                    internal.queue.push_back(data.take().unwrap());
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+            Err(SendTimeoutError::Timeout(data))
         }
 
         /// Returns whether the receive side of the channel is closed or not.
@@ -498,25 +392,29 @@ macro_rules! shared_recv_impl {
         /// ```
         #[inline(always)]
         pub fn try_recv(&self) -> Result<Option<T>, ReceiveError> {
+            let cap = self.internal.capacity();
             let mut internal = acquire_internal(&self.internal);
             if unlikely(internal.recv_count == 0) {
-                return Err(ReceiveError::Closed);
+                return Err(ReceiveError());
             }
-            if let Some(v) = internal.queue.pop_front() {
-                if let Some(p) = internal.next_send() {
-                    // if there is a sender take its data and push it into the
-                    // queue Safety: it's safe to receive from owned
-                    // signal once
-                    unsafe { internal.queue.push_back(p.recv()) }
+            if cap > 0 {
+                if let Some(v) = internal.queue.pop_front() {
+                    if let Some(p) = internal.next_send() {
+                        // if there is a sender take its data and push it into the
+                        // queue Safety: it's safe to receive from owned
+                        // signal once
+                        unsafe { internal.queue.push_back(p.recv()) }
+                    }
+                    return Ok(Some(v));
                 }
-                return Ok(Some(v));
-            } else if let Some(p) = internal.next_send() {
-                // Safety: it's safe to receive from owned signal once
+            }
+            if let Some(p) = internal.next_send() {
+                // SAFETY: it's safe to receive from owned signal once
                 drop(internal);
                 return unsafe { Ok(Some(p.recv())) };
             }
             if unlikely(internal.send_count == 0) {
-                return Err(ReceiveError::SendClosed);
+                return Err(ReceiveError());
             }
             Ok(None)
             // if the queue is not empty send the data
@@ -547,40 +445,48 @@ macro_rules! shared_recv_impl {
         /// ```
         #[inline(always)]
         pub fn try_recv_realtime(&self) -> Result<Option<T>, ReceiveError> {
+            let cap = self.internal.capacity();
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
                 if unlikely(internal.recv_count == 0) {
-                    return Err(ReceiveError::Closed);
+                    return Err(ReceiveError());
                 }
-                if let Some(v) = internal.queue.pop_front() {
-                    if let Some(p) = internal.next_send() {
-                        // if there is a sender take its data and push it into
-                        // the queue Safety: it's safe to
-                        // receive from owned signal once
-                        unsafe { internal.queue.push_back(p.recv()) }
+                if cap > 0 {
+                    if let Some(v) = internal.queue.pop_front() {
+                        if let Some(p) = internal.next_send() {
+                            // if there is a sender take its data and push it into
+                            // the queue Safety: it's safe to
+                            // receive from owned signal once
+                            unsafe { internal.queue.push_back(p.recv()) }
+                        }
+                        return Ok(Some(v));
                     }
-                    return Ok(Some(v));
-                } else if let Some(p) = internal.next_send() {
-                    // Safety: it's safe to receive from owned signal once
+                }
+                if let Some(p) = internal.next_send() {
+                    // SAFETY: it's safe to receive from owned signal once
                     drop(internal);
                     return unsafe { Ok(Some(p.recv())) };
                 }
                 if unlikely(internal.send_count == 0) {
-                    return Err(ReceiveError::SendClosed);
+                    return Err(ReceiveError());
                 }
             }
             Ok(None)
         }
 
-        /// Drains all available messages from the channel into the provided vector and returns the number of received messages.
+        /// Drains all available messages from the channel into the provided vector and
+        /// returns the number of received messages.
         ///
-        /// The function is designed to be non-blocking, meaning it only processes messages that are readily available and returns
-        /// immediately with whatever messages are present. It provides a count of received messages, which could be zero if no
-        /// messages are available at the time of the call.
+        /// The function is designed to be non-blocking, meaning it only processes
+        /// messages that are readily available and returns immediately with whatever
+        /// messages are present. It provides a count of received messages, which could
+        /// be zero if no messages are available at the time of the call.
         ///
-        /// When using this function, it’s a good idea to check if the returned count is zero to avoid busy-waiting in a loop.
-        /// If blocking behavior is desired when the count is zero, you can use the `recv()` function if count is zero. For efficiency,
-        /// reusing the same vector across multiple calls can help minimize memory allocations. Between uses, you can clear
-        /// the vector with `vec.clear()` to prepare it for the next set of messages.
+        /// When using this function, it’s a good idea to check if the returned count is
+        /// zero to avoid busy-waiting in a loop. If blocking behavior is desired when
+        /// the count is zero, you can use the `recv()` function if count is zero. For
+        /// efficiency, reusing the same vector across multiple calls can help minimize
+        /// memory allocations. Between uses, you can clear the vector with
+        /// `vec.clear()` to prepare it for the next set of messages.
         ///
         /// # Examples
         ///
@@ -622,7 +528,7 @@ macro_rules! shared_recv_impl {
             let remaining_cap = vec.capacity() - vec_initial_length;
             let mut internal = acquire_internal(&self.internal);
             if unlikely(internal.recv_count == 0) {
-                return Err(ReceiveError::Closed);
+                return Err(ReceiveError());
             }
             let required_cap = internal.queue.len() + {
                 if internal.recv_blocking {
@@ -638,7 +544,7 @@ macro_rules! shared_recv_impl {
                 vec.push(v);
             }
             while let Some(p) = internal.next_send() {
-                // Safety: it's safe to receive from owned signal once
+                // SAFETY: it's safe to receive from owned signal once
                 unsafe { vec.push(p.recv()) }
             }
             Ok(required_cap)
@@ -697,42 +603,37 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send(&self, data: T) -> Result<(), SendError> {
+    pub fn send(&self, data: T) -> Result<(), SendError<T>> {
+        let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
-            let send_count = internal.send_count;
-            // Avoid wasting lock time on dropping failed send object
             drop(internal);
-            if send_count == 0 {
-                return Err(SendError::Closed);
-            }
-            return Err(SendError::ReceiveClosed);
+            return Err(SendError(data));
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
-            // Safety: it's safe to send to owned signal once
+            // SAFETY: it's safe to send to owned signal once
             unsafe { first.send(data) }
-            Ok(())
-        } else if internal.queue.len() < internal.capacity {
-            // Safety: MaybeUninit is acting like a ManuallyDrop
-            internal.queue.push_back(data);
-            Ok(())
-        } else {
-            let mut data = MaybeUninit::new(data);
-            // send directly to the waitlist
-            let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
-            internal.push_send(sig.get_terminator());
-            drop(internal);
-            if unlikely(!sig.wait()) {
-                // Safety: data failed to move, sender should drop it if it
-                // needs to
-                if needs_drop::<T>() {
-                    unsafe { data.assume_init_drop() }
-                }
-                return Err(SendError::Closed);
-            }
-            Ok(())
+            return Ok(());
         }
+        if cap > 0 && internal.queue.len() < cap {
+            // SAFETY: MaybeUninit is acting like a ManuallyDrop
+            internal.queue.push_back(data);
+            return Ok(());
+        }
+        let mut data = MaybeUninit::new(data);
+        // send directly to the waitlist
+        let sig = SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr()));
+        internal.push_signal(sig.get_dynamic_ptr());
+        drop(internal);
+        if unlikely(!sig.wait()) {
+            // SAFETY: data failed to move, sender should drop it if it
+            // needs to
+
+            return Err(SendError(unsafe { data.assume_init() }));
+        }
+        Ok(())
+
         // if the queue is not empty send the data
     }
     /// Sends data to the channel with a deadline, if send fails then the object
@@ -754,138 +655,57 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send_timeout(&self, data: T, duration: Duration) -> Result<(), SendErrorTimeout> {
+    pub fn send_timeout(&self, data: T, duration: Duration) -> Result<(), SendTimeoutError<T>> {
+        let cap = self.internal.capacity();
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
-            let send_count = internal.send_count;
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
-            if send_count == 0 {
-                return Err(SendErrorTimeout::Closed);
-            }
-            return Err(SendErrorTimeout::ReceiveClosed);
+            return Err(SendTimeoutError::Closed(data));
         }
         if let Some(first) = internal.next_recv() {
             drop(internal);
-            // Safety: it's safe to send to owned signal once
+            // SAFETY: it's safe to send to owned signal once
             unsafe { first.send(data) }
-            Ok(())
-        } else if internal.queue.len() < internal.capacity {
-            // Safety: MaybeUninit is used as a ManuallyDrop, and data in it is
+            return Ok(());
+        }
+        if cap > 0 && internal.queue.len() < cap {
+            // SAFETY: MaybeUninit is used as a ManuallyDrop, and data in it is
             // valid.
             internal.queue.push_back(data);
-            Ok(())
-        } else {
-            let mut data = MaybeUninit::new(data);
-            // send directly to the waitlist
-            let sig = Signal::new_sync(KanalPtr::new_from(data.as_mut_ptr()));
-            internal.push_send(sig.get_terminator());
-            drop(internal);
-            if unlikely(!sig.wait_timeout(deadline)) {
-                if sig.is_terminated() {
-                    // Safety: data failed to move, sender should drop it if it
-                    // needs to
-                    if needs_drop::<T>() {
-                        unsafe { data.assume_init_drop() }
-                    }
-                    return Err(SendErrorTimeout::Closed);
-                }
-                {
-                    let mut internal = acquire_internal(&self.internal);
-                    if internal.cancel_send_signal(&sig) {
-                        return Err(SendErrorTimeout::Timeout);
-                    }
-                }
-                // removing receive failed to wait for the signal response
-                if unlikely(!sig.wait()) {
-                    // Safety: data failed to move, sender should drop it if it
-                    // needs to
-                    if needs_drop::<T>() {
-                        unsafe { data.assume_init_drop() }
-                    }
-                    return Err(SendErrorTimeout::Closed);
+            return Ok(());
+        }
+        let mut data = MaybeUninit::new(data);
+        // send directly to the waitlist
+        let sig = SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr()));
+        internal.push_signal(sig.get_dynamic_ptr());
+        drop(internal);
+        if unlikely(!sig.wait_timeout(deadline)) {
+            if sig.is_terminated() {
+                // SAFETY: data failed to move, sender should drop it if it
+                // needs to
+                return Err(SendTimeoutError::Closed(unsafe { data.assume_init() }));
+            }
+            {
+                let mut internal = acquire_internal(&self.internal);
+                if internal.cancel_send_signal(sig.as_tagged_ptr()) {
+                    // SAFETY: data failed to move, we return it to the user
+                    return Err(SendTimeoutError::Timeout(unsafe { data.assume_init() }));
                 }
             }
-            Ok(())
+            // removing receive failed to wait for the signal response
+            if unlikely(!sig.wait()) {
+                // SAFETY: data failed to move, we return it to the user
+
+                return Err(SendTimeoutError::Closed(unsafe { data.assume_init() }));
+            }
         }
+        Ok(())
+
         // if the queue is not empty send the data
     }
 
-    /// Tries to send data from provided option with a deadline, it will panic
-    /// on successful send for None option.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::thread::spawn;
-    /// # use std::time::Duration;
-    /// # let (s, r) = kanal::bounded(0);
-    /// # spawn(move || {
-    ///  let mut opt=Some("Hello");
-    ///  s.send_option_timeout(&mut opt,Duration::from_millis(500)).unwrap();
-    /// #      anyhow::Ok(())
-    /// # });
-    /// # let name=r.recv()?;
-    /// # println!("Hello {}!",name);
-    /// # anyhow::Ok(())
-    /// ```
-    #[inline(always)]
-    pub fn send_option_timeout(
-        &self,
-        data: &mut Option<T>,
-        duration: Duration,
-    ) -> Result<(), SendErrorTimeout> {
-        if data.is_none() {
-            panic!("send data option is None");
-        }
-        let deadline = Instant::now().checked_add(duration).unwrap();
-        let mut internal = acquire_internal(&self.internal);
-        if unlikely(internal.recv_count == 0) {
-            let send_count = internal.send_count;
-            // Avoid wasting lock time on dropping failed send object
-            drop(internal);
-            if send_count == 0 {
-                return Err(SendErrorTimeout::Closed);
-            }
-            return Err(SendErrorTimeout::ReceiveClosed);
-        }
-        if let Some(first) = internal.next_recv() {
-            drop(internal);
-            // Safety: it's safe to send to owned signal once
-            unsafe { first.send(data.take().unwrap()) }
-            Ok(())
-        } else if internal.queue.len() < internal.capacity {
-            internal.queue.push_back(data.take().unwrap());
-            Ok(())
-        } else {
-            // send directly to the waitlist
-            let mut d = data.take().unwrap();
-            let sig = Signal::new_sync(KanalPtr::new_from(&mut d));
-            internal.push_send(sig.get_terminator());
-            drop(internal);
-            if unlikely(!sig.wait_timeout(deadline)) {
-                if sig.is_terminated() {
-                    *data = Some(d);
-                    return Err(SendErrorTimeout::Closed);
-                }
-                {
-                    let mut internal = acquire_internal(&self.internal);
-                    if internal.cancel_send_signal(&sig) {
-                        *data = Some(d);
-                        return Err(SendErrorTimeout::Timeout);
-                    }
-                }
-                // removing receive failed to wait for the signal response
-                if unlikely(!sig.wait()) {
-                    *data = Some(d);
-                    return Err(SendErrorTimeout::Closed);
-                }
-            }
-            Ok(())
-        }
-        // if the queue is not empty send the data
-    }
     shared_send_impl!();
     /// Clones [`Sender`] as the async version of it and returns it
     #[cfg(feature = "async")]
@@ -914,7 +734,7 @@ impl<T> Sender<T> {
     /// ```
     #[cfg(feature = "async")]
     pub fn to_async(self) -> AsyncSender<T> {
-        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        // SAFETY: structure of Sender<T> and AsyncSender<T> is same
         unsafe { transmute(self) }
     }
 
@@ -936,7 +756,7 @@ impl<T> Sender<T> {
     /// ```
     #[cfg(feature = "async")]
     pub fn as_async(&self) -> &AsyncSender<T> {
-        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        // SAFETY: structure of Sender<T> and AsyncSender<T> is same
         unsafe { transmute(self) }
     }
     shared_impl!();
@@ -1001,7 +821,7 @@ impl<T> AsyncSender<T> {
     /// # });
     /// ```
     pub fn to_sync(self) -> Sender<T> {
-        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        // SAFETY: structure of Sender<T> and AsyncSender<T> is same
         unsafe { transmute(self) }
     }
 
@@ -1024,7 +844,7 @@ impl<T> AsyncSender<T> {
     /// # });
     /// ```
     pub fn as_sync(&self) -> &Sender<T> {
-        // Safety: structure of Sender<T> and AsyncSender<T> is same
+        // SAFETY: structure of Sender<T> and AsyncSender<T> is same
         unsafe { transmute(self) }
     }
 
@@ -1083,99 +903,107 @@ impl<T> Receiver<T> {
     /// Receives data from the channel
     #[inline(always)]
     pub fn recv(&self) -> Result<T, ReceiveError> {
+        let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
-            return Err(ReceiveError::Closed);
+            return Err(ReceiveError());
         }
-        if let Some(v) = internal.queue.pop_front() {
-            if let Some(p) = internal.next_send() {
-                // if there is a sender take its data and push it into the queue
-                // Safety: it's safe to receive from owned signal once
-                unsafe { internal.queue.push_back(p.recv()) }
+        if cap > 0 {
+            if let Some(v) = internal.queue.pop_front() {
+                if let Some(p) = internal.next_send() {
+                    // if there is a sender take its data and push it into the queue
+                    // SAFETY: it's safe to receive from owned signal once
+                    unsafe { internal.queue.push_back(p.recv()) }
+                }
+                return Ok(v);
             }
-            Ok(v)
-        } else if let Some(p) = internal.next_send() {
+        }
+        if let Some(p) = internal.next_send() {
             drop(internal);
-            // Safety: it's safe to receive from owned signal once
-            unsafe { Ok(p.recv()) }
+            // SAFETY: it's safe to receive from owned signal once
+            return unsafe { Ok(p.recv()) };
+        }
+        if unlikely(internal.send_count == 0) {
+            return Err(ReceiveError());
+        }
+        // no active waiter so push to the queue
+        let mut ret = MaybeUninit::<T>::uninit();
+        let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
+        internal.push_signal(sig.get_dynamic_ptr());
+        drop(internal);
+
+        if unlikely(!sig.wait()) {
+            return Err(ReceiveError());
+        }
+
+        // SAFETY: it's safe to assume init as data is forgotten on another
+        // side
+        if size_of::<T>() > size_of::<*mut T>() {
+            Ok(unsafe { ret.assume_init() })
         } else {
-            if unlikely(internal.send_count == 0) {
-                return Err(ReceiveError::SendClosed);
-            }
-            // no active waiter so push to the queue
-            let mut ret = MaybeUninit::<T>::uninit();
-            let sig = Signal::new_sync(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-            internal.push_recv(sig.get_terminator());
-            drop(internal);
-
-            if unlikely(!sig.wait()) {
-                return Err(ReceiveError::Closed);
-            }
-
-            // Safety: it's safe to assume init as data is forgotten on another
-            // side
-            if size_of::<T>() > size_of::<*mut T>() {
-                Ok(unsafe { ret.assume_init() })
-            } else {
-                Ok(unsafe { sig.assume_init() })
-            }
+            Ok(unsafe { sig.assume_init() })
         }
+
         // if the queue is not empty send the data
     }
     /// Tries receiving from the channel within a duration
     #[inline(always)]
     pub fn recv_timeout(&self, duration: Duration) -> Result<T, ReceiveErrorTimeout> {
+        let cap = self.internal.capacity();
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
             return Err(ReceiveErrorTimeout::Closed);
         }
-        if let Some(v) = internal.queue.pop_front() {
-            if let Some(p) = internal.next_send() {
-                // if there is a sender take its data and push it into the queue
-                // Safety: it's safe to receive from owned signal once
-                unsafe { internal.queue.push_back(p.recv()) }
-            }
-            Ok(v)
-        } else if let Some(p) = internal.next_send() {
-            drop(internal);
-            // Safety: it's safe to receive from owned signal once
-            unsafe { Ok(p.recv()) }
-        } else {
-            if unlikely(Instant::now() > deadline) {
-                return Err(ReceiveErrorTimeout::Timeout);
-            }
-            if unlikely(internal.send_count == 0) {
-                return Err(ReceiveErrorTimeout::SendClosed);
-            }
-            // no active waiter so push to the queue
-            let mut ret = MaybeUninit::<T>::uninit();
-            let sig = Signal::new_sync(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-            internal.push_recv(sig.get_terminator());
-            drop(internal);
-            if unlikely(!sig.wait_timeout(deadline)) {
-                if sig.is_terminated() {
-                    return Err(ReceiveErrorTimeout::Closed);
+        if cap > 0 {
+            if let Some(v) = internal.queue.pop_front() {
+                if let Some(p) = internal.next_send() {
+                    // if there is a sender take its data and push it into the queue
+                    // SAFETY: it's safe to receive from owned signal once
+                    unsafe { internal.queue.push_back(p.recv()) }
                 }
-                {
-                    let mut internal = acquire_internal(&self.internal);
-                    if internal.cancel_recv_signal(&sig) {
-                        return Err(ReceiveErrorTimeout::Timeout);
-                    }
-                }
-                // removing receive failed to wait for the signal response
-                if unlikely(!sig.wait()) {
-                    return Err(ReceiveErrorTimeout::Closed);
-                }
-            }
-            // Safety: it's safe to assume init as data is forgotten on another
-            // side
-            if size_of::<T>() > size_of::<*mut T>() {
-                Ok(unsafe { ret.assume_init() })
-            } else {
-                Ok(unsafe { sig.assume_init() })
+                return Ok(v);
             }
         }
+        if let Some(p) = internal.next_send() {
+            drop(internal);
+            // SAFETY: it's safe to receive from owned signal once
+            return unsafe { Ok(p.recv()) };
+        }
+        if unlikely(Instant::now() > deadline) {
+            return Err(ReceiveErrorTimeout::Timeout);
+        }
+        if unlikely(internal.send_count == 0) {
+            return Err(ReceiveErrorTimeout::Closed);
+        }
+        // no active waiter so push to the queue
+        let mut ret = MaybeUninit::<T>::uninit();
+        let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
+        internal.push_signal(sig.get_dynamic_ptr());
+        drop(internal);
+        if unlikely(!sig.wait_timeout(deadline)) {
+            if sig.is_terminated() {
+                return Err(ReceiveErrorTimeout::Closed);
+            }
+            {
+                let mut internal = acquire_internal(&self.internal);
+                if internal.cancel_recv_signal(sig.as_tagged_ptr()) {
+                    return Err(ReceiveErrorTimeout::Timeout);
+                }
+            }
+            // removing receive failed to wait for the signal response
+            if unlikely(!sig.wait()) {
+                return Err(ReceiveErrorTimeout::Closed);
+            }
+        }
+        // SAFETY: it's safe to assume init as data is forgotten on another
+        // side
+        if size_of::<T>() > size_of::<*mut T>() {
+            Ok(unsafe { ret.assume_init() })
+        } else {
+            Ok(unsafe { sig.assume_init() })
+        }
+
         // if the queue is not empty send the data
     }
 
@@ -1209,7 +1037,7 @@ impl<T> Receiver<T> {
     /// ```
     #[cfg(feature = "async")]
     pub fn to_async(self) -> AsyncReceiver<T> {
-        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        // SAFETY: structure of Receiver<T> and AsyncReceiver<T> is same
         unsafe { transmute(self) }
     }
 
@@ -1233,7 +1061,7 @@ impl<T> Receiver<T> {
     /// ```
     #[cfg(feature = "async")]
     pub fn as_async(&self) -> &AsyncReceiver<T> {
-        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        // SAFETY: structure of Receiver<T> and AsyncReceiver<T> is same
         unsafe { transmute(self) }
     }
 
@@ -1255,19 +1083,25 @@ impl<T> AsyncReceiver<T> {
     ///
     /// # Cancellation and Polling Considerations
     ///
-    /// Due to current limitations in Rust's handling of future cancellation, if a
-    /// `ReceiveFuture` is dropped exactly at the time when new data is written to the
-    /// channel, it may result in the loss of the received value. This behavior although memory-safe stems from
-    /// the fact that Rust does not provide a built-in, correct mechanism for cancelling futures.
+    /// Due to current limitations in Rust's handling of future cancellation, if
+    /// a `ReceiveFuture` is dropped exactly at the time when new data is
+    /// written to the channel, it may result in the loss of the received
+    /// value. This behavior although memory-safe stems from the fact that
+    /// Rust does not provide a built-in, correct mechanism for cancelling
+    /// futures.
     ///
-    /// Additionally, it is important to note that constructs such as `tokio::select!` are not correct to use
-    /// with kanal async channels. Kanal's design does not rely on the conventional `poll` mechanism to
-    /// read messages. Because of its internal optimizations, the future may complete without receiving the
-    /// final poll, which prevents proper handling of the message.
+    /// Additionally, it is important to note that constructs such as
+    /// `tokio::select!` are not correct to use with kanal async channels.
+    /// Kanal's design does not rely on the conventional `poll` mechanism to
+    /// read messages. Because of its internal optimizations, the future may
+    /// complete without receiving the final poll, which prevents proper
+    /// handling of the message.
     ///
-    /// As a result, once the `ReceiveFuture` is polled for the first time (which registers the request to
-    /// receive data), the programmer must commit to completing the polling process. This ensures that
-    /// messages are correctly delivered and avoids potential race conditions associated with cancellation.
+    /// As a result, once the `ReceiveFuture` is polled for the first time
+    /// (which registers the request to receive data), the programmer must
+    /// commit to completing the polling process. This ensures that messages
+    /// are correctly delivered and avoids potential race conditions associated
+    /// with cancellation.
     ///
     /// # Examples
     ///
@@ -1364,7 +1198,7 @@ impl<T> AsyncReceiver<T> {
     /// # });
     /// ```
     pub fn to_sync(self) -> Receiver<T> {
-        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        // SAFETY: structure of Receiver<T> and AsyncReceiver<T> is same
         unsafe { transmute(self) }
     }
 
@@ -1386,7 +1220,7 @@ impl<T> AsyncReceiver<T> {
     /// # });
     /// ```
     pub fn as_sync(&self) -> &Receiver<T> {
-        // Safety: structure of Receiver<T> and AsyncReceiver<T> is same
+        // SAFETY: structure of Receiver<T> and AsyncReceiver<T> is same
         unsafe { transmute(self) }
     }
 
@@ -1505,9 +1339,11 @@ const UNBOUNDED_STARTING_SIZE: usize = 32;
 /// receiver.
 ///
 /// # Warning
-/// This unbounded channel does not shrink its queue. As a result, if the receive side is
-/// exhausted or delayed, the internal queue may grow substantially. This behavior is intentional and considered as a warmup phase.
-/// If such growth is undesirable, consider using a bounded channel with an appropriate queue size.
+/// This unbounded channel does not shrink its queue. As a result, if the
+/// receive side is exhausted or delayed, the internal queue may grow
+/// substantially. This behavior is intentional and considered as a warmup
+/// phase. If such growth is undesirable, consider using a bounded channel with
+/// an appropriate queue size.
 ///
 /// # Examples
 ///
@@ -1548,9 +1384,11 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 /// based on your requirements, by calling them on async sender or receiver.
 ///
 /// # Warning
-/// This unbounded channel does not shrink its queue. As a result, if the receive side is
-/// exhausted or delayed, the internal queue may grow substantially. This behavior is intentional and considered as a warmup phase.
-/// If such growth is undesirable, consider using a bounded channel with an appropriate queue size.
+/// This unbounded channel does not shrink its queue. As a result, if the
+/// receive side is exhausted or delayed, the internal queue may grow
+/// substantially. This behavior is intentional and considered as a warmup
+/// phase. If such growth is undesirable, consider using a bounded channel with
+/// an appropriate queue size.
 ///
 /// # Examples
 ///
