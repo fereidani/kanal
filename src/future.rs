@@ -3,7 +3,7 @@ use crate::{
     signal::AsyncSignal,
     AsyncReceiver, ReceiveError, SendError,
 };
-use core::{fmt::Debug, marker::PhantomPinned, pin::Pin, task::Poll};
+use core::{cell::UnsafeCell, fmt::Debug, marker::PhantomPinned, pin::Pin, task::Poll};
 
 use branches::{likely, unlikely};
 use futures_core::{FusedStream, Future, Stream};
@@ -219,7 +219,8 @@ impl<T> Drop for ReceiveFuture<'_, T> {
                 return;
             }
             // we failed to cancel the signal,
-            // a sender got signal ownership, receiver should wait until the response
+            // either it is unregistered or a sender got signal ownership, receiver should
+            // wait until the response
             if !state.is_unregistered() && self.sig.blocking_wait() {
                 // got ownership of data that is not going to be used ever again, so drop it
                 // this is actually a bug in user code but we should handle it gracefully
@@ -420,6 +421,151 @@ impl<'a, T> ReceiveStream<'a, T> {
             future: Box::pin(future),
             terminated: false,
             receiver,
+        }
+    }
+}
+
+/// SendManyFuture is a future for sending multiple objects to a channel
+/// asynchronously. It must be polled to complete the send operation.
+#[must_use = "futures do nothing unless you .await or poll them"]
+#[derive(Debug)]
+pub struct SendManyFuture<'a, 'b, T> {
+    internal: &'a Internal<T>,
+    // Store the inner future in a pinned box because SendFuture is !Unpin.
+    fut: UnsafeCell<Option<SendFuture<'a, T>>>,
+    elements: &'b mut std::collections::VecDeque<T>,
+    finished: bool,
+    _pinned: PhantomPinned,
+}
+
+impl<'a, 'b, T> SendManyFuture<'a, 'b, T> {
+    #[inline(always)]
+    pub(crate) fn new(
+        internal: &'a Internal<T>,
+        elements: &'b mut std::collections::VecDeque<T>,
+    ) -> Self {
+        SendManyFuture {
+            internal,
+            fut: UnsafeCell::new(None),
+            elements,
+            finished: false,
+            _pinned: PhantomPinned,
+        }
+    }
+}
+
+impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
+    type Output = Result<(), SendError<T>>;
+
+    #[inline(always)]
+    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if unlikely(this.finished) {
+            panic!("polled after completion");
+        }
+
+        let fut = this.fut.get_mut();
+        // If Some(fut) we have an active send future to poll.
+        if let Some(fut) = fut {
+            // SAFETY: this is pinned therefore it's safe to create a pinned reference
+            let fut = unsafe { Pin::new_unchecked(fut) };
+            match fut.poll(cx) {
+                Poll::Ready(res) => {
+                    // Future completed, clear it.
+                    this.fut = UnsafeCell::new(None);
+                    if this.elements.is_empty() {
+                        this.finished = true;
+                        return Poll::Ready(res);
+                    }
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+
+        // If there is nothing to send we are done.
+        if unlikely(this.elements.is_empty()) {
+            this.finished = true;
+            return Poll::Ready(Ok(()));
+        }
+
+        // Channel capacity
+        let cap = this.internal.capacity();
+
+        // Acquire a mutable reference to the internal state.
+        let mut internal = acquire_internal(this.internal);
+
+        // Channel is closed from the other side
+        if unlikely(internal.recv_count == 0) {
+            // Return the first element that could not be sent.
+            let first = this.elements.pop_front().unwrap();
+            drop(internal);
+            this.finished = true;
+            return Poll::Ready(Err(SendError(first)));
+        }
+
+        // -----------------------------------------------------------------
+        // 1) Deliver directly to waiting receivers.
+        // -----------------------------------------------------------------
+        while let Some(waiter) = internal.next_recv() {
+            // SAFETY: it is safe to send an owned waiter once
+            unsafe {
+                waiter.send(this.elements.pop_front().unwrap());
+            }
+            if unlikely(this.elements.is_empty()) {
+                // No more elements to send.
+                drop(internal);
+                this.finished = true;
+                return Poll::Ready(Ok(()));
+            }
+        }
+
+        if unlikely(this.elements.is_empty()) {
+            // Nothing left to send.
+            drop(internal);
+            this.finished = true;
+            return Poll::Ready(Ok(()));
+        }
+
+        // -----------------------------------------------------------------
+        // 2) Fill the channel’s queue (if it has a bounded/unbounded capacity).
+        // -----------------------------------------------------------------
+        if cap > 0 {
+            while internal.queue.len() < cap {
+                if let Some(v) = this.elements.pop_front() {
+                    internal.queue.push_back(v);
+                } else {
+                    // All elements have been queued.
+                    drop(internal);
+                    this.finished = true;
+                    return Poll::Ready(Ok(()));
+                }
+            }
+            if unlikely(this.elements.is_empty()) {
+                drop(internal);
+                this.finished = true;
+                return Poll::Ready(Ok(()));
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 3) If there are still elements, send the next one via a signal
+        // -----------------------------------------------------------------
+        if let Some(v) = this.elements.pop_front() {
+            // Wrap the next element in a SendFuture.
+            this.fut = UnsafeCell::new(Some(SendFuture::new(this.internal, v)));
+            // The future will be polled on the next call.
+            let fut = this.fut.get_mut().as_mut().unwrap();
+            // This is pinned therefore this.fut is also pinned.
+            internal.push_signal(fut.sig.dynamic_ptr());
+            drop(internal);
+            Poll::Pending
+        } else {
+            // No more elements left.
+            this.finished = true;
+            Poll::Ready(Ok(()))
         }
     }
 }
