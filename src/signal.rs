@@ -1,6 +1,7 @@
 use crate::{backoff, pointer::KanalPtr};
 use core::{
     cell::UnsafeCell,
+    fmt::Debug,
     mem::ManuallyDrop,
     sync::atomic::{fence, AtomicUsize, Ordering},
     time::Duration,
@@ -132,7 +133,7 @@ impl<T> DynamicSignal<T> {
     }
 }
 
-pub struct SyncSignal<T> {
+pub(crate) struct SyncSignal<T> {
     state: CacheGuard<AtomicUsize>,
     ptr: KanalPtr<T>, //data: UnsafeCell<MaybeUninit<T>>,
     thread: UnsafeCell<ManuallyDrop<Thread>>,
@@ -261,11 +262,19 @@ impl<T> SyncSignal<T> {
 }
 
 #[cfg(feature = "async")]
-pub struct AsyncSignal<T> {
+pub(crate) struct AsyncSignal<T> {
     state: CacheGuard<AtomicUsize>,
     data: UnsafeCell<MaybeUninit<T>>,
     waker: UnsafeCell<Waker>,
     _pinned: core::marker::PhantomPinned,
+}
+
+impl<T> Debug for AsyncSignal<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("AsyncSignal")
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 #[cfg(feature = "async")]
