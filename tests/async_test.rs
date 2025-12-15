@@ -380,7 +380,7 @@ mod asyncs {
     }
 
     #[tokio::test]
-    async fn drop_test_in_unused_signal() {
+    async fn drop_test_in_unused_send_signal() {
         let (s, r) = new(Some(10));
 
         let counter = Arc::new(AtomicUsize::new(0));
@@ -389,7 +389,17 @@ mod asyncs {
             drop(s.send(DropTester::new(counter, 1234)));
         }
         r.close().unwrap();
-        assert_eq!(counter.load(Ordering::SeqCst), 10_usize);
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
+    }
+
+    #[tokio::test]
+    async fn drop_test_in_unused_recv_signal() {
+        let (s, r) = new::<usize>(Some(10));
+
+        for _ in 0..10 {
+            drop(r.recv());
+        }
+        s.close().unwrap();
     }
 
     #[tokio::test]
