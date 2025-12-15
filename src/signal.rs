@@ -13,7 +13,6 @@ use std::{
 };
 
 use branches::{likely, unlikely};
-#[cfg(feature = "async")]
 use cacheguard::CacheGuard;
 
 const UNINIT: usize = 0;
@@ -21,6 +20,7 @@ const LOCKED: usize = UNINIT + 1;
 const LOCKED_STARVATION: usize = UNINIT + 2;
 const TERMINATED: usize = !0 - 1;
 const UNLOCKED: usize = !0;
+#[cfg(feature = "async")]
 const DONE: usize = usize::MAX / 2;
 
 #[inline(always)]
@@ -268,6 +268,7 @@ pub struct AsyncSignal<T> {
     _pinned: core::marker::PhantomPinned,
 }
 
+#[cfg(feature = "async")]
 const fn no_op_waker() -> Waker {
     use core::task::{RawWaker, RawWakerVTable, Waker};
 
