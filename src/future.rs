@@ -21,6 +21,7 @@ pub(crate) enum FutureState {
 #[cold]
 fn mark_branch_unlikely() {}
 
+#[allow(unused)]
 impl FutureState {
     #[inline(always)]
     fn is_pending(&self) -> bool {
@@ -223,7 +224,8 @@ impl<T> Drop for ReceiveFuture<'_, T> {
                 // got ownership of data that is not going to be used ever again, so drop it
                 // this is actually a bug in user code but we should handle it gracefully
                 // and we warn user in debug mode
-                // SAFETY: data is not moved it's safe to drop it or put it back to the channel queue
+                // SAFETY: data is not moved it's safe to drop it or put it back to the channel
+                // queue
                 unsafe {
                     if self.internal.capacity() == 0 {
                         #[cfg(debug_assertions)]

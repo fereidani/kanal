@@ -384,12 +384,13 @@ impl<T> AsyncSignal<T> {
     pub(crate) unsafe fn will_wake(&self, waker: &Waker) -> bool {
         (&*self.waker.get()).will_wake(waker)
     }
-    // SAFETY: this function is only safe when owner of signal have exclusive lock over channel,
-    //  this avoids another reader to clone the waker while we are updating it.
-    //  this function should not be called if signal is uninitialized or already shared.
+    // SAFETY: this function is only safe when owner of signal have exclusive lock
+    // over channel,  this avoids another reader to clone the waker while we are
+    // updating it.  this function should not be called if signal is
+    // uninitialized or already shared.
     #[inline(always)]
     pub(crate) unsafe fn update_waker(&self, waker: &Waker) {
-        *(&mut *self.waker.get()) = waker.clone();
+        *self.waker.get() = waker.clone();
     }
     #[inline(always)]
     pub(crate) unsafe fn clone_waker(&self) -> Waker {

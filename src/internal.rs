@@ -202,7 +202,8 @@ impl<T> ChannelInternal<T> {
         if !self.recv_blocking {
             for (i, send) in self.wait_list.iter().enumerate() {
                 if send.eq_ptr(sig) {
-                    // SAFETY: it's safe to cancel owned signal once, we are sure that index is valid
+                    // SAFETY: it's safe to cancel owned signal once, we are sure that index is
+                    // valid
                     unsafe {
                         self.wait_list.remove(i).unwrap_unchecked().cancel();
                     }
@@ -219,7 +220,8 @@ impl<T> ChannelInternal<T> {
         if self.recv_blocking {
             for (i, recv) in self.wait_list.iter().enumerate() {
                 if recv.eq_ptr(sig) {
-                    // SAFETY: it's safe to cancel owned signal once, we are sure that index is valid
+                    // SAFETY: it's safe to cancel owned signal once, we are sure that index is
+                    // valid
                     unsafe {
                         self.wait_list.remove(i).unwrap_unchecked().cancel();
                     }
