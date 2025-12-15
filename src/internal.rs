@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use branches::unlikely;
 use cacheguard::CacheGuard;
+use core::fmt::Debug;
 #[cfg(feature = "std-mutex")]
 use std::sync::{Mutex, MutexGuard};
 
@@ -13,6 +14,12 @@ pub(crate) struct Internal<T> {
     _guard: CacheGuard<()>,
     /// The internal channel object
     internal: *mut (Mutex<ChannelInternal<T>>, usize),
+}
+
+impl<T> Debug for Internal<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Internal").finish()
+    }
 }
 
 // Mutex is sync and send, so we can send it across threads
