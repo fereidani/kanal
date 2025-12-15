@@ -13,11 +13,15 @@ use std::{
 };
 
 use branches::{likely, unlikely};
+#[cfg(feature = "async")]
+use cacheguard::CacheGuard;
 
-const LOCKED: usize = 0;
-const LOCKED_STARVATION: usize = 1;
+const UNINIT: usize = 0;
+const LOCKED: usize = UNINIT + 1;
+const LOCKED_STARVATION: usize = UNINIT + 2;
 const TERMINATED: usize = !0 - 1;
 const UNLOCKED: usize = !0;
+const DONE: usize = usize::MAX / 2;
 
 #[inline(always)]
 #[cfg(feature = "async")]
@@ -129,7 +133,7 @@ impl<T> DynamicSignal<T> {
 }
 
 pub struct SyncSignal<T> {
-    state: AtomicUsize,
+    state: CacheGuard<AtomicUsize>,
     ptr: KanalPtr<T>, //data: UnsafeCell<MaybeUninit<T>>,
     thread: UnsafeCell<ManuallyDrop<Thread>>,
     _pinned: core::marker::PhantomPinned,
@@ -139,13 +143,13 @@ impl<T> SyncSignal<T> {
     #[inline(always)]
     pub(crate) fn new(ptr: KanalPtr<T>) -> Self {
         Self {
-            state: AtomicUsize::new(LOCKED),
+            state: CacheGuard::new(AtomicUsize::new(LOCKED)),
             ptr,
             thread: UnsafeCell::new(ManuallyDrop::new(current_thread())),
             _pinned: core::marker::PhantomPinned,
         }
     }
-    pub(crate) fn get_dynamic_ptr(&self) -> DynamicSignal<T> {
+    pub(crate) fn dynamic_ptr(&self) -> DynamicSignal<T> {
         DynamicSignal::new_sync(self as *const SyncSignal<T>)
     }
     #[inline(always)]
@@ -258,41 +262,115 @@ impl<T> SyncSignal<T> {
 
 #[cfg(feature = "async")]
 pub struct AsyncSignal<T> {
-    state: AtomicUsize,
+    state: CacheGuard<AtomicUsize>,
     data: UnsafeCell<MaybeUninit<T>>,
-    waker: MaybeUninit<Waker>,
+    waker: UnsafeCell<Waker>,
     _pinned: core::marker::PhantomPinned,
 }
 
-#[cfg(feature = "async")]
-pub(crate) enum AsyncSignalResult {
-    Success,
-    Failure,
-    Pending,
+const fn no_op_waker() -> Waker {
+    use core::task::{RawWaker, RawWakerVTable, Waker};
+
+    const unsafe fn clone(_: *const ()) -> RawWaker {
+        raw_waker()
+    }
+    const unsafe fn wake(_: *const ()) {}
+    const unsafe fn wake_by_ref(_: *const ()) {}
+    const unsafe fn drop(_: *const ()) {}
+
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+    const unsafe fn raw_waker() -> RawWaker {
+        RawWaker::new(core::ptr::null(), &VTABLE)
+    }
+
+    unsafe { Waker::from_raw(raw_waker()) }
 }
 
+#[cfg(feature = "async")]
+use crate::future::FutureState;
 #[cfg(feature = "async")]
 impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub(crate) const fn new_recv() -> Self {
         Self {
-            state: AtomicUsize::new(LOCKED),
+            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(
+                FutureState::Unregistered,
+            ))),
             data: UnsafeCell::new(MaybeUninit::uninit()),
-            waker: MaybeUninit::uninit(),
+            waker: UnsafeCell::new(no_op_waker()),
             _pinned: core::marker::PhantomPinned,
         }
     }
+
     #[inline(always)]
     pub(crate) const fn new_send(data: T) -> Self {
         Self {
-            state: AtomicUsize::new(LOCKED),
+            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(
+                FutureState::Unregistered,
+            ))),
             data: UnsafeCell::new(MaybeUninit::new(data)),
-            waker: MaybeUninit::uninit(),
+            waker: UnsafeCell::new(no_op_waker()),
             _pinned: core::marker::PhantomPinned,
         }
     }
+
     #[inline(always)]
-    pub(crate) fn get_dynamic_ptr(&self) -> DynamicSignal<T> {
+    const fn state_to_usize(state: FutureState) -> usize {
+        match state {
+            FutureState::Success => UNLOCKED,
+            FutureState::Unregistered => UNINIT,
+            FutureState::Pending => LOCKED,
+            FutureState::Failure => TERMINATED,
+            _ => DONE,
+        }
+    }
+
+    #[inline(always)]
+    const fn usize_to_state(val: usize) -> FutureState {
+        match val {
+            UNLOCKED => FutureState::Success,
+            UNINIT => FutureState::Unregistered,
+            LOCKED => FutureState::Pending,
+            TERMINATED => FutureState::Failure,
+            _ => FutureState::Done,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn state(&self) -> FutureState {
+        Self::usize_to_state(self.state.load(Ordering::Acquire))
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_state(&self, state: FutureState) {
+        self.state
+            .store(Self::state_to_usize(state), Ordering::Release);
+    }
+
+    pub(crate) fn set_state_relaxed(&self, state: FutureState) {
+        self.state
+            .store(Self::state_to_usize(state), Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    #[allow(unused)]
+    pub(crate) fn compare_exchange_future_state(
+        &self,
+        current: FutureState,
+        new: FutureState,
+    ) -> Result<FutureState, FutureState> {
+        match self.state.compare_exchange(
+            Self::state_to_usize(current),
+            Self::state_to_usize(new),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(new),
+            Err(v) => Err(Self::usize_to_state(v)),
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn dynamic_ptr(&self) -> DynamicSignal<T> {
         DynamicSignal::new_async(self as *const AsyncSignal<T>)
     }
     #[inline(always)]
@@ -300,56 +378,47 @@ impl<T> AsyncSignal<T> {
     pub(crate) fn as_tagged_ptr(&self) -> *const () {
         tag_pointer(self as *const Self as *const ())
     }
+
     #[inline(always)]
     pub(crate) unsafe fn will_wake(&self, waker: &Waker) -> bool {
-        (&*self.waker.as_ptr()).will_wake(waker)
+        (&*self.waker.get()).will_wake(waker)
     }
-    pub(crate) fn result(&self) -> AsyncSignalResult {
-        let v = self.state.load(Ordering::Acquire);
-        if likely(v == UNLOCKED) {
-            AsyncSignalResult::Success
-        } else if v == TERMINATED {
-            AsyncSignalResult::Failure
-        } else {
-            AsyncSignalResult::Pending
-        }
+    // SAFETY: this function is only safe when owner of signal have exclusive lock over channel,
+    //  this avoids another reader to clone the waker while we are updating it.
+    //  this function should not be called if signal is uninitialized or already shared.
+    #[inline(always)]
+    pub(crate) unsafe fn update_waker(&self, waker: &Waker) {
+        *(&mut *self.waker.get()) = waker.clone();
+    }
+    #[inline(always)]
+    pub(crate) unsafe fn clone_waker(&self) -> Waker {
+        (&*self.waker.get()).clone()
     }
     #[inline(always)]
     pub(crate) unsafe fn write_data(this: *const Self, data: T) {
-        let waker = (*this).waker.as_ptr().read();
+        let waker = (*this).clone_waker();
         (*this).data.get().write(MaybeUninit::new(data));
         (*this).state.store(UNLOCKED, Ordering::Release);
         waker.wake();
     }
     #[inline(always)]
     pub(crate) unsafe fn read_data(this: *const Self) -> T {
-        let waker = (*this).waker.as_ptr().read();
+        let waker = (*this).clone_waker();
         let data = (*this).data.get().read().assume_init();
         (*this).state.store(UNLOCKED, Ordering::Release);
         waker.wake();
         data
     }
+
     // Drops waker without waking
-    pub(crate) unsafe fn cancel(this: *const Self) {
-        let _ = (*this).waker.as_ptr().read();
-    }
+    pub(crate) unsafe fn cancel(_this: *const Self) {}
     pub(crate) unsafe fn assume_init(&self) -> T {
         unsafe { self.data.get().read().assume_init() }
     }
     pub(crate) unsafe fn terminate(this: *const Self) {
-        let waker = (*this).waker.as_ptr().read();
+        let waker = (*this).clone_waker();
         (*this).state.store(TERMINATED, Ordering::Release);
         waker.wake();
-    }
-    #[inline(always)]
-    pub(crate) unsafe fn init_waker(&mut self, waker: Waker) {
-        self.waker.as_mut_ptr().write(waker);
-    }
-    #[inline(always)]
-    pub(crate) unsafe fn register_waker(&mut self, waker: Waker) {
-        let waker_ptr = self.waker.as_mut_ptr();
-        waker_ptr.drop_in_place();
-        waker_ptr.write(waker);
     }
     #[inline(always)]
     pub(crate) unsafe fn drop_data(&mut self) {
