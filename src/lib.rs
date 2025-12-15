@@ -23,7 +23,7 @@ use core::{
     mem::{size_of, MaybeUninit},
     time::Duration,
 };
-use std::time::Instant;
+use std::{pin::pin, time::Instant};
 
 use branches::unlikely;
 use internal::{acquire_internal, try_acquire_internal, Internal};
@@ -623,8 +623,8 @@ impl<T> Sender<T> {
         }
         let mut data = MaybeUninit::new(data);
         // send directly to the waitlist
-        let sig = SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr()));
-        internal.push_signal(sig.get_dynamic_ptr());
+        let sig = pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
+        internal.push_signal(sig.dynamic_ptr());
         drop(internal);
         if unlikely(!sig.wait()) {
             // SAFETY: data failed to move, sender should drop it if it
@@ -678,8 +678,8 @@ impl<T> Sender<T> {
         }
         let mut data = MaybeUninit::new(data);
         // send directly to the waitlist
-        let sig = SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr()));
-        internal.push_signal(sig.get_dynamic_ptr());
+        let sig = pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
+        internal.push_signal(sig.dynamic_ptr());
         drop(internal);
         if unlikely(!sig.wait_timeout(deadline)) {
             if sig.is_terminated() {
@@ -928,8 +928,10 @@ impl<T> Receiver<T> {
         }
         // no active waiter so push to the queue
         let mut ret = MaybeUninit::<T>::uninit();
-        let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-        internal.push_signal(sig.get_dynamic_ptr());
+        let sig = pin!(SyncSignal::new(KanalPtr::new_write_address_ptr(
+            ret.as_mut_ptr()
+        )));
+        internal.push_signal(sig.dynamic_ptr());
         drop(internal);
 
         if unlikely(!sig.wait()) {
@@ -978,8 +980,10 @@ impl<T> Receiver<T> {
         }
         // no active waiter so push to the queue
         let mut ret = MaybeUninit::<T>::uninit();
-        let sig = SyncSignal::new(KanalPtr::new_write_address_ptr(ret.as_mut_ptr()));
-        internal.push_signal(sig.get_dynamic_ptr());
+        let sig = pin!(SyncSignal::new(KanalPtr::new_write_address_ptr(
+            ret.as_mut_ptr()
+        )));
+        internal.push_signal(sig.dynamic_ptr());
         drop(internal);
         if unlikely(!sig.wait_timeout(deadline)) {
             if sig.is_terminated() {
