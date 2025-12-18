@@ -524,7 +524,6 @@ fn send_many(channel_size: Option<usize>) {
     });
 
     for i in 0..MESSAGES {
-        println!("receiving {}", i);
         assert_eq!(r.recv().unwrap(), i);
     }
 }
