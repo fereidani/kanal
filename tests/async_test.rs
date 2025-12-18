@@ -8,6 +8,7 @@ mod asyncs {
         bounded_async, unbounded_async, AsyncReceiver, AsyncSender, ReceiveError, SendError,
     };
     use std::{
+        collections::VecDeque,
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -429,6 +430,32 @@ mod asyncs {
     #[tokio::test]
     async fn vec_test() {
         mpmc_dyn!({}, vec![1, 2, 3], Some(1));
+    }
+
+    async fn send_many(channel_size: Option<usize>) {
+        let (s, r) = new(channel_size);
+        tokio::spawn(async move {
+            let mut msgs = (0..MESSAGES).collect::<VecDeque<usize>>();
+            s.send_many(&mut msgs).await.unwrap();
+        });
+        for i in 0..MESSAGES {
+            assert_eq!(r.recv().await.unwrap(), i);
+        }
+    }
+
+    #[tokio::test]
+    async fn send_many_0() {
+        send_many(Some(0)).await;
+    }
+
+    #[tokio::test]
+    async fn send_many_1() {
+        send_many(Some(1)).await;
+    }
+
+    #[tokio::test]
+    async fn send_many_u() {
+        send_many(None).await;
     }
 
     #[tokio::test]

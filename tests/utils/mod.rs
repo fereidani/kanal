@@ -9,7 +9,7 @@ use std::{
 
 #[cfg(not(miri))]
 #[allow(dead_code)]
-pub const MESSAGES: usize = 100000;
+pub const MESSAGES: usize = 10_000_000;
 #[cfg(miri)]
 #[allow(dead_code)]
 pub const MESSAGES: usize = 32;

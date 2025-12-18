@@ -515,3 +515,31 @@ fn mpmc_n() {
 fn mpmc_u() {
     mpmc(None);
 }
+
+fn send_many(channel_size: Option<usize>) {
+    let (s, r) = new(channel_size);
+    std::thread::spawn(move || {
+        let mut msgs: std::collections::VecDeque<usize> = (0..MESSAGES).collect();
+        s.send_many(&mut msgs).unwrap();
+    });
+
+    for i in 0..MESSAGES {
+        println!("receiving {}", i);
+        assert_eq!(r.recv().unwrap(), i);
+    }
+}
+
+#[test]
+fn send_many_0() {
+    send_many(Some(0));
+}
+
+#[test]
+fn send_many_1() {
+    send_many(Some(1));
+}
+
+#[test]
+fn send_many_u() {
+    send_many(None);
+}
