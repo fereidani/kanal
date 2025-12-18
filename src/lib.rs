@@ -207,8 +207,8 @@ macro_rules! shared_impl {
         /// let receiver_clone=r.clone();
         /// assert_eq!(r.receiver_count(),2);
         /// ```
-        pub fn receiver_count(&self) -> u32 {
-            acquire_internal(&self.internal).recv_count
+        pub fn receiver_count(&self) -> usize {
+            acquire_internal(&self.internal).recv_count as usize
         }
         /// Returns count of alive sender instances of the channel.
         ///
@@ -219,8 +219,8 @@ macro_rules! shared_impl {
         /// let sender_clone=s.clone();
         /// assert_eq!(r.sender_count(),2);
         /// ```
-        pub fn sender_count(&self) -> u32 {
-            acquire_internal(&self.internal).send_count
+        pub fn sender_count(&self) -> usize {
+            acquire_internal(&self.internal).send_count as usize
         }
         /// Closes the channel completely on both sides and terminates waiting
         /// signals.
@@ -733,6 +733,7 @@ impl<T> Sender<T> {
             let mut data = MaybeUninit::new(elements.pop_front().unwrap());
             // send directly to the waitlist
             let sig = pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
+            internal.recv_blocking = false;
             internal.push_signal(sig.dynamic_ptr());
             drop(internal);
             if unlikely(!sig.wait()) {

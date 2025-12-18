@@ -270,10 +270,16 @@ impl<T> ChannelInternal<T> {
     pub(crate) fn inc_ref_count(&mut self, is_sender: bool) {
         if is_sender {
             if self.send_count > 0 {
-                self.send_count += 1;
+                self.send_count = self
+                    .send_count
+                    .checked_add(1)
+                    .expect("channel sender count overflow");
             }
         } else if self.recv_count > 0 {
-            self.recv_count += 1;
+            self.recv_count = self
+                .recv_count
+                .checked_add(1)
+                .expect("channel receiver count overflow");
         }
         self.ref_count += 1;
     }
