@@ -102,6 +102,14 @@ impl<'a, T> SendFuture<'a, T> {
             _pinned: PhantomPinned,
         }
     }
+    #[inline(always)]
+    pub(crate) fn new_finished(internal: &'a Internal<T>) -> Self {
+        SendFuture {
+            internal,
+            sig: AsyncSignal::new_send_finished(),
+            _pinned: PhantomPinned,
+        }
+    }
 }
 
 impl<T> Future for SendFuture<'_, T> {
@@ -431,10 +439,14 @@ impl<'a, T> ReceiveStream<'a, T> {
 #[derive(Debug)]
 pub struct SendManyFuture<'a, 'b, T> {
     internal: &'a Internal<T>,
-    // Store the inner future in a pinned box because SendFuture is !Unpin.
-    fut: UnsafeCell<Option<SendFuture<'a, T>>>,
+    // This is a UnsafeCell, because it can be shared in WaitQueue of the channel
+    fut: UnsafeCell<SendFuture<'a, T>>,
+    // Elements that we are writing to the channel
     elements: &'b mut std::collections::VecDeque<T>,
+    // Future is finished and no longer should be polled
     finished: bool,
+    // If set we are in wait queue and fut shall not be used as mutable
+    in_wait_queue: bool,
     _pinned: PhantomPinned,
 }
 
@@ -446,9 +458,10 @@ impl<'a, 'b, T> SendManyFuture<'a, 'b, T> {
     ) -> Self {
         SendManyFuture {
             internal,
-            fut: UnsafeCell::new(None),
+            fut: UnsafeCell::new(SendFuture::new_finished(internal)),
             elements,
             finished: false,
+            in_wait_queue: false,
             _pinned: PhantomPinned,
         }
     }
@@ -461,111 +474,110 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        if unlikely(this.finished) {
-            panic!("polled after completion");
-        }
+        loop {
+            if unlikely(this.finished) {
+                panic!("polled after completion");
+            }
 
-        let fut = this.fut.get_mut();
-        // If Some(fut) we have an active send future to poll.
-        if let Some(fut) = fut {
-            // SAFETY: this is pinned therefore it's safe to create a pinned reference
-            let fut = unsafe { Pin::new_unchecked(fut) };
-            match fut.poll(cx) {
-                Poll::Ready(res) => {
-                    // Future completed, clear it.
-                    this.fut = UnsafeCell::new(None);
-                    if this.elements.is_empty() {
-                        this.finished = true;
-                        return Poll::Ready(res);
+            if this.in_wait_queue {
+                // SAFETY: this is pinned therefore it's safe to create a pinned reference
+                let fut = unsafe { Pin::new_unchecked(this.fut.get_mut()) };
+
+                match fut.poll(cx) {
+                    Poll::Ready(res) => {
+                        if this.elements.is_empty() {
+                            this.finished = true;
+                            return Poll::Ready(res);
+                        }
                     }
+                    Poll::Pending => return Poll::Pending,
                 }
-                Poll::Pending => {
-                    return Poll::Pending;
-                }
+                this.in_wait_queue = false;
             }
-        }
 
-        // If there is nothing to send we are done.
-        if unlikely(this.elements.is_empty()) {
-            this.finished = true;
-            return Poll::Ready(Ok(()));
-        }
-
-        // Channel capacity
-        let cap = this.internal.capacity();
-
-        // Acquire a mutable reference to the internal state.
-        let mut internal = acquire_internal(this.internal);
-
-        // Channel is closed from the other side
-        if unlikely(internal.recv_count == 0) {
-            // Return the first element that could not be sent.
-            let first = this.elements.pop_front().unwrap();
-            drop(internal);
-            this.finished = true;
-            return Poll::Ready(Err(SendError(first)));
-        }
-
-        // -----------------------------------------------------------------
-        // 1) Deliver directly to waiting receivers.
-        // -----------------------------------------------------------------
-        while let Some(waiter) = internal.next_recv() {
-            // SAFETY: it is safe to send an owned waiter once
-            unsafe {
-                waiter.send(this.elements.pop_front().unwrap());
-            }
+            // If there is nothing to send we are done.
             if unlikely(this.elements.is_empty()) {
-                // No more elements to send.
-                drop(internal);
                 this.finished = true;
                 return Poll::Ready(Ok(()));
             }
-        }
 
-        if unlikely(this.elements.is_empty()) {
-            // Nothing left to send.
-            drop(internal);
-            this.finished = true;
-            return Poll::Ready(Ok(()));
-        }
+            // Channel capacity
+            let cap = this.internal.capacity();
 
-        // -----------------------------------------------------------------
-        // 2) Fill the channel’s queue (if it has a bounded/unbounded capacity).
-        // -----------------------------------------------------------------
-        if cap > 0 {
-            while internal.queue.len() < cap {
-                if let Some(v) = this.elements.pop_front() {
-                    internal.queue.push_back(v);
-                } else {
-                    // All elements have been queued.
+            // Acquire a mutable reference to the internal state.
+            let mut internal = acquire_internal(this.internal);
+
+            // Channel is closed from the other side
+            if unlikely(internal.recv_count == 0) {
+                // Return the first element that could not be sent.
+                let first = this.elements.pop_front().unwrap();
+                drop(internal);
+                this.finished = true;
+                return Poll::Ready(Err(SendError(first)));
+            }
+
+            // -----------------------------------------------------------------
+            // 1) Deliver directly to waiting receivers.
+            // -----------------------------------------------------------------
+            while let Some(waiter) = internal.next_recv() {
+                let v = this.elements.pop_front().unwrap();
+                // SAFETY: it is safe to send an owned waiter once
+                unsafe {
+                    waiter.send(v);
+                }
+                if unlikely(this.elements.is_empty()) {
+                    // No more elements to send.
                     drop(internal);
                     this.finished = true;
                     return Poll::Ready(Ok(()));
                 }
             }
+
             if unlikely(this.elements.is_empty()) {
+                // Nothing left to send.
                 drop(internal);
                 this.finished = true;
                 return Poll::Ready(Ok(()));
             }
-        }
 
-        // -----------------------------------------------------------------
-        // 3) If there are still elements, send the next one via a signal
-        // -----------------------------------------------------------------
-        if let Some(v) = this.elements.pop_front() {
-            // Wrap the next element in a SendFuture.
-            this.fut = UnsafeCell::new(Some(SendFuture::new(this.internal, v)));
-            // The future will be polled on the next call.
-            let fut = this.fut.get_mut().as_mut().unwrap();
-            // This is pinned therefore this.fut is also pinned.
-            internal.push_signal(fut.sig.dynamic_ptr());
-            drop(internal);
-            Poll::Pending
-        } else {
-            // No more elements left.
-            this.finished = true;
-            Poll::Ready(Ok(()))
+            // -----------------------------------------------------------------
+            // 2) Fill the channel’s queue (if it has a bounded/unbounded capacity).
+            // -----------------------------------------------------------------
+            if cap > 0 {
+                while internal.queue.len() < cap {
+                    if let Some(v) = this.elements.pop_front() {
+                        internal.queue.push_back(v);
+                    } else {
+                        // All elements have been queued.
+                        drop(internal);
+                        this.finished = true;
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // 3) If there are still elements, send the next one via a signal
+            // -----------------------------------------------------------------
+            if let Some(v) = this.elements.pop_front() {
+                // SAFETY: we checked above and we are not in any wait queue as we are not
+                // registered in the queue yet.
+                unsafe {
+                    this.fut.get_mut().sig.reset_send(v);
+                }
+                // This is pinned therefore this.fut is also pinned.
+                internal.push_signal(this.fut.get_mut().sig.dynamic_ptr());
+
+                this.in_wait_queue = true;
+                drop(internal);
+                // go poll the future to register the waker or return early if message already
+                // arrived
+                continue;
+            } else {
+                // No more elements left.
+                this.finished = true;
+                return Poll::Ready(Ok(()));
+            }
         }
     }
 }

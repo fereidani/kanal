@@ -324,6 +324,26 @@ impl<T> AsyncSignal<T> {
         }
     }
 
+    /// SAFETY: caller must guarantee this signal is already finished and is not
+    /// shared in any wait queue
+    pub(crate) unsafe fn reset_send(&mut self, data: T) {
+        self.data.get_mut().write(data);
+        self.state.store(
+            Self::state_to_usize(FutureState::Pending),
+            Ordering::Release,
+        );
+    }
+
+    #[inline(always)]
+    pub(crate) const fn new_send_finished() -> Self {
+        Self {
+            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(FutureState::Success))),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+            waker: UnsafeCell::new(no_op_waker()),
+            _pinned: core::marker::PhantomPinned,
+        }
+    }
+
     #[inline(always)]
     const fn state_to_usize(state: FutureState) -> usize {
         match state {
