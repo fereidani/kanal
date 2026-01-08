@@ -679,9 +679,7 @@ impl<T> Future for DrainIntoBlockingFuture<'_, '_, T> {
                 }
 
                 // Drain queue
-                while let Some(v) = internal.queue.pop_front() {
-                    this.vec.push(v);
-                }
+                this.vec.extend(internal.queue.drain(..));
 
                 // Drain wait_list send signals
                 while let Some(p) = internal.next_send() {

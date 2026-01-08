@@ -1198,9 +1198,7 @@ impl<T> Receiver<T> {
         }
 
         // Drain queue
-        while let Some(v) = internal.queue.pop_front() {
-            vec.push(v);
-        }
+        vec.extend(internal.queue.drain(..));
 
         // Drain wait_list send signals
         while let Some(p) = internal.next_send() {
