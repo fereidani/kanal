@@ -542,3 +542,38 @@ fn send_many_1() {
 fn send_many_u() {
     send_many(None);
 }
+
+fn drain_into_blocking(channel_size: Option<usize>) {
+    let (s, r) = new(channel_size);
+    std::thread::spawn(move || {
+        let mut msgs: std::collections::VecDeque<usize> = (0..MESSAGES).collect();
+        s.send_many(&mut msgs).unwrap();
+    });
+
+    let mut vec = Vec::new();
+    let mut total = 0;
+    while total < MESSAGES {
+        let count = r.drain_into_blocking(&mut vec).unwrap();
+        assert!(count > 0);
+        total += count;
+    }
+    assert_eq!(vec.len(), MESSAGES);
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(*v, i);
+    }
+}
+
+#[test]
+fn drain_into_blocking_0() {
+    drain_into_blocking(Some(0));
+}
+
+#[test]
+fn drain_into_blocking_1() {
+    drain_into_blocking(Some(1));
+}
+
+#[test]
+fn drain_into_blocking_u() {
+    drain_into_blocking(None);
+}

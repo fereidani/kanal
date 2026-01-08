@@ -458,6 +458,41 @@ mod asyncs {
         send_many(None).await;
     }
 
+    async fn drain_into_blocking(channel_size: Option<usize>) {
+        let (s, r) = new(channel_size);
+        tokio::spawn(async move {
+            let mut msgs = (0..MESSAGES).collect::<VecDeque<usize>>();
+            s.send_many(&mut msgs).await.unwrap();
+        });
+
+        let mut vec = Vec::new();
+        let mut total = 0;
+        while total < MESSAGES {
+            let count = r.drain_into_blocking(&mut vec).await.unwrap();
+            assert!(count > 0);
+            total += count;
+        }
+        assert_eq!(vec.len(), MESSAGES);
+        for (i, v) in vec.iter().enumerate() {
+            assert_eq!(*v, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_0() {
+        drain_into_blocking(Some(0)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_1() {
+        drain_into_blocking(Some(1)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_u() {
+        drain_into_blocking(None).await;
+    }
+
     #[tokio::test]
     async fn one_msg() {
         let (s, r) = bounded_async::<u8>(1);
