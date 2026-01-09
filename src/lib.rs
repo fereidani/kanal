@@ -1172,9 +1172,36 @@ impl<T> Receiver<T> {
     ///
     /// This function combines the behavior of `drain_into` with blocking semantics:
     /// - If messages are available, it drains all of them and returns immediately
-    /// - If no messages are available, it blocks until at least one message arrives
+    /// - If no messages are available, it blocks the current thread until at least one message arrives
     ///
     /// Returns the number of messages received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # let (s, r) = kanal::bounded(100);
+    /// # let t = spawn(move || {
+    /// #   for i in 0..100 {
+    /// #     s.send(i)?;
+    /// #   }
+    /// #   anyhow::Ok(())
+    /// # });
+    ///
+    /// let mut buf = Vec::new();
+    /// loop {
+    ///     match r.drain_into_blocking(&mut buf) {
+    ///         Ok(count) => {
+    ///             assert!(count > 0);
+    ///             // process buf...
+    ///             buf.clear();
+    ///         }
+    ///         Err(_) => break, // channel closed
+    ///     }
+    /// }
+    /// # t.join().unwrap()?;
+    /// # anyhow::Ok(())
+    /// ```
     pub fn drain_into_blocking(&self, vec: &mut Vec<T>) -> Result<usize, ReceiveError> {
         let vec_initial_length = vec.len();
         let mut internal = acquire_internal(&self.internal);
@@ -1389,13 +1416,43 @@ impl<T> AsyncReceiver<T> {
     }
 
     /// Returns a [`DrainIntoBlockingFuture`] to drain all available messages from the channel
-    /// into the provided vector, blocking until at least one message is received.
+    /// into the provided vector, awaiting until at least one message is received.
     ///
-    /// This function combines the behavior of `drain_into` with async blocking semantics:
+    /// This function combines the behavior of `drain_into` with async semantics:
     /// - If messages are available, it drains all of them and returns immediately
-    /// - If no messages are available, it awaits until at least one message arrives
+    /// - If no messages are available, it awaits (yields to the async runtime) until at least one message arrives
+    ///
+    /// Note: The name "blocking" refers to the semantic behavior (waiting for data), not thread blocking.
+    /// This method is fully async and will not block the thread.
     ///
     /// Returns the number of messages received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use tokio::spawn;
+    /// let (s, r) = kanal::bounded_async(100);
+    /// spawn(async move {
+    ///     for i in 0..100 {
+    ///         s.send(i).await.unwrap();
+    ///     }
+    /// });
+    ///
+    /// let mut buf = Vec::new();
+    /// loop {
+    ///     match r.drain_into_blocking(&mut buf).await {
+    ///         Ok(count) => {
+    ///             assert!(count > 0);
+    ///             // process buf...
+    ///             buf.clear();
+    ///         }
+    ///         Err(_) => break, // channel closed
+    ///     }
+    /// }
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
     #[inline(always)]
     pub fn drain_into_blocking<'a, 'b>(
         &'a self,

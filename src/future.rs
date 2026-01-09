@@ -611,10 +611,6 @@ impl<T> Drop for DrainIntoBlockingFuture<'_, '_, T> {
                 // SAFETY: data is not moved it's safe to drop it or put it back to the channel queue
                 unsafe {
                     if self.internal.capacity() == 0 {
-                        #[cfg(debug_assertions)]
-                        println!(
-                            "warning: DrainIntoBlockingFuture dropped while send operation is in progress"
-                        );
                         self.sig.drop_data();
                     } else {
                         // fallback: push it back to the channel queue

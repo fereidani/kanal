@@ -600,14 +600,20 @@ fn drain_into_blocking_waits(channel_size: Option<usize>) {
     std::thread::sleep(Duration::from_millis(50));
 
     // Receiver should still be blocked (no data sent yet)
-    assert!(!received.load(Ordering::SeqCst), "receiver should be blocking");
+    assert!(
+        !received.load(Ordering::SeqCst),
+        "receiver should be blocking"
+    );
 
     // Now send data
     s.send(42usize).unwrap();
 
     // Wait for receiver to complete
     let vec = handle.join().unwrap();
-    assert!(received.load(Ordering::SeqCst), "receiver should have received");
+    assert!(
+        received.load(Ordering::SeqCst),
+        "receiver should have received"
+    );
     assert_eq!(vec, vec![42]);
 }
 
