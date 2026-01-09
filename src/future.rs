@@ -581,3 +581,177 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
         }
     }
 }
+
+/// DrainIntoBlockingFuture is a future for draining all available messages from a channel
+/// into a vector, blocking until at least one message is received.
+#[must_use = "futures do nothing unless you .await or poll them"]
+pub struct DrainIntoBlockingFuture<'a, 'b, T> {
+    internal: &'a Internal<T>,
+    sig: AsyncSignal<T>,
+    vec: &'b mut Vec<T>,
+    _pinned: PhantomPinned,
+}
+
+impl<T> Drop for DrainIntoBlockingFuture<'_, '_, T> {
+    fn drop(&mut self) {
+        let state = self.sig.state();
+        if unlikely(!state.is_done()) {
+            // try to cancel the signal if we are still waiting
+            if state.is_pending()
+                && acquire_internal(self.internal).cancel_recv_signal(self.sig.as_tagged_ptr())
+            {
+                // signal canceled
+                return;
+            }
+            // we failed to cancel the signal,
+            // either it is unregistered or a sender got signal ownership, receiver should
+            // wait until the response
+            if !state.is_unregistered() && self.sig.blocking_wait() {
+                // got ownership of data that is not going to be used ever again, so drop it
+                // SAFETY: data is not moved it's safe to drop it or put it back to the channel queue
+                unsafe {
+                    if self.internal.capacity() == 0 {
+                        self.sig.drop_data();
+                    } else {
+                        // fallback: push it back to the channel queue
+                        acquire_internal(self.internal)
+                            .queue
+                            .push_front(self.sig.assume_init())
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<T> Debug for DrainIntoBlockingFuture<'_, '_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "DrainIntoBlockingFuture {{ .. }}")
+    }
+}
+
+impl<'a, 'b, T> DrainIntoBlockingFuture<'a, 'b, T> {
+    #[inline(always)]
+    pub(crate) fn new(internal: &'a Internal<T>, vec: &'b mut Vec<T>) -> Self {
+        Self {
+            sig: AsyncSignal::new_recv(),
+            internal,
+            vec,
+            _pinned: PhantomPinned,
+        }
+    }
+}
+
+impl<T> Future for DrainIntoBlockingFuture<'_, '_, T> {
+    type Output = Result<usize, ReceiveError>;
+
+    #[inline(always)]
+    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        match this.sig.state() {
+            FutureState::Unregistered => {
+                let vec_initial_length = this.vec.len();
+                let mut internal = acquire_internal(this.internal);
+
+                // Check if channel is closed
+                if unlikely(internal.recv_count == 0) {
+                    this.sig.set_state_relaxed(FutureState::Done);
+                    return Poll::Ready(Err(ReceiveError()));
+                }
+
+                // Calculate required capacity and reserve
+                let required_cap = internal.queue.len() + {
+                    if internal.recv_blocking {
+                        0
+                    } else {
+                        internal.wait_list.len()
+                    }
+                };
+                let remaining_cap = this.vec.capacity() - vec_initial_length;
+                if required_cap > remaining_cap {
+                    this.vec
+                        .reserve(vec_initial_length + required_cap - remaining_cap);
+                }
+
+                // Drain queue
+                this.vec.extend(internal.queue.drain(..));
+
+                // Drain wait_list send signals
+                while let Some(p) = internal.next_send() {
+                    // SAFETY: it's safe to receive from owned signal once
+                    unsafe { this.vec.push(p.recv()) }
+                }
+
+                // If got data, return immediately
+                let count = this.vec.len() - vec_initial_length;
+                if count > 0 {
+                    this.sig.set_state_relaxed(FutureState::Done);
+                    return Poll::Ready(Ok(count));
+                }
+
+                // No data, check if there are still senders
+                if unlikely(internal.send_count == 0) {
+                    this.sig.set_state_relaxed(FutureState::Done);
+                    return Poll::Ready(Err(ReceiveError()));
+                }
+
+                // Register signal and wait
+                this.sig.set_state(FutureState::Pending);
+                // SAFETY: waker is NOOP and not shared yet, it is safe to init it here
+                unsafe {
+                    this.sig.update_waker(cx.waker());
+                }
+                internal.push_signal(this.sig.dynamic_ptr());
+                drop(internal);
+                Poll::Pending
+            }
+            FutureState::Success => {
+                this.sig.set_state_relaxed(FutureState::Done);
+                // SAFETY: data is received and safe to read
+                this.vec.push(unsafe { this.sig.assume_init() });
+                Poll::Ready(Ok(1))
+            }
+            FutureState::Pending => {
+                let waker = cx.waker();
+                // SAFETY: signal waker is valid as we inited it in future pending state
+                if unsafe { !this.sig.will_wake(waker) } {
+                    // the Waker is changed and we need to update waker in the waiting list
+                    let internal = acquire_internal(this.internal);
+                    if internal.recv_signal_exists(this.sig.as_tagged_ptr()) {
+                        // SAFETY: signal is not shared with other thread yet so it's safe to
+                        // update waker locally
+                        unsafe {
+                            this.sig.update_waker(waker);
+                        }
+                        drop(internal);
+                        Poll::Pending
+                    } else {
+                        drop(internal);
+                        // the signal is already shared, and data will be available shortly,
+                        // so wait synchronously and return the result
+                        this.sig.set_state_relaxed(FutureState::Done);
+                        if likely(this.sig.blocking_wait()) {
+                            // SAFETY: data is received and safe to read
+                            this.vec.push(unsafe { this.sig.assume_init() });
+                            Poll::Ready(Ok(1))
+                        } else {
+                            Poll::Ready(Err(ReceiveError()))
+                        }
+                    }
+                } else {
+                    Poll::Pending
+                }
+            }
+            FutureState::Failure => {
+                mark_branch_unlikely();
+                this.sig.set_state_relaxed(FutureState::Done);
+                Poll::Ready(Err(ReceiveError()))
+            }
+            FutureState::Done => {
+                mark_branch_unlikely();
+                panic!("polled after result is already returned")
+            }
+        }
+    }
+}

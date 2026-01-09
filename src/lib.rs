@@ -1167,6 +1167,104 @@ impl<T> Receiver<T> {
         // if the queue is not empty send the data
     }
 
+    /// Drains all available messages from the channel into the provided vector,
+    /// blocking until at least one message is received.
+    ///
+    /// This function combines the behavior of `drain_into` with blocking semantics:
+    /// - If messages are available, it drains all of them and returns immediately
+    /// - If no messages are available, it blocks the current thread until at least one message arrives
+    ///
+    /// Returns the number of messages received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # let (s, r) = kanal::bounded(100);
+    /// # let t = spawn(move || {
+    /// #   for i in 0..100 {
+    /// #     s.send(i)?;
+    /// #   }
+    /// #   anyhow::Ok(())
+    /// # });
+    ///
+    /// let mut buf = Vec::new();
+    /// loop {
+    ///     match r.drain_into_blocking(&mut buf) {
+    ///         Ok(count) => {
+    ///             assert!(count > 0);
+    ///             // process buf...
+    ///             buf.clear();
+    ///         }
+    ///         Err(_) => break, // channel closed
+    ///     }
+    /// }
+    /// # t.join().unwrap()?;
+    /// # anyhow::Ok(())
+    /// ```
+    pub fn drain_into_blocking(&self, vec: &mut Vec<T>) -> Result<usize, ReceiveError> {
+        let vec_initial_length = vec.len();
+        let mut internal = acquire_internal(&self.internal);
+
+        // Check if channel is closed
+        if unlikely(internal.recv_count == 0) {
+            return Err(ReceiveError());
+        }
+
+        // Calculate required capacity and reserve
+        let required_cap = internal.queue.len() + {
+            if internal.recv_blocking {
+                0
+            } else {
+                internal.wait_list.len()
+            }
+        };
+        let remaining_cap = vec.capacity() - vec_initial_length;
+        if required_cap > remaining_cap {
+            vec.reserve(vec_initial_length + required_cap - remaining_cap);
+        }
+
+        // Drain queue
+        vec.extend(internal.queue.drain(..));
+
+        // Drain wait_list send signals
+        while let Some(p) = internal.next_send() {
+            // SAFETY: it's safe to receive from owned signal once
+            unsafe { vec.push(p.recv()) }
+        }
+
+        // If got data, return immediately
+        let count = vec.len() - vec_initial_length;
+        if count > 0 {
+            return Ok(count);
+        }
+
+        // No data, check if there are still senders
+        if unlikely(internal.send_count == 0) {
+            return Err(ReceiveError());
+        }
+
+        // Register signal and wait
+        let mut ret = MaybeUninit::<T>::uninit();
+        let sig = pin!(SyncSignal::new(KanalPtr::new_write_address_ptr(
+            ret.as_mut_ptr()
+        )));
+        internal.push_signal(sig.dynamic_ptr());
+        drop(internal);
+
+        if unlikely(!sig.wait()) {
+            return Err(ReceiveError());
+        }
+
+        // Read data and return
+        if size_of::<T>() > size_of::<*mut T>() {
+            vec.push(unsafe { ret.assume_init() });
+        } else {
+            vec.push(unsafe { sig.assume_init() });
+        }
+        Ok(1)
+    }
+
     shared_recv_impl!();
     #[cfg(feature = "async")]
     /// Clones receiver as the async version of it
@@ -1316,6 +1414,53 @@ impl<T> AsyncReceiver<T> {
     pub fn stream(&'_ self) -> ReceiveStream<'_, T> {
         ReceiveStream::new_borrowed(self)
     }
+
+    /// Returns a [`DrainIntoBlockingFuture`] to drain all available messages from the channel
+    /// into the provided vector, awaiting until at least one message is received.
+    ///
+    /// This function combines the behavior of `drain_into` with async semantics:
+    /// - If messages are available, it drains all of them and returns immediately
+    /// - If no messages are available, it awaits (yields to the async runtime) until at least one message arrives
+    ///
+    /// Note: The name "blocking" refers to the semantic behavior (waiting for data), not thread blocking.
+    /// This method is fully async and will not block the thread.
+    ///
+    /// Returns the number of messages received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # use tokio::spawn;
+    /// let (s, r) = kanal::bounded_async(100);
+    /// spawn(async move {
+    ///     for i in 0..100 {
+    ///         s.send(i).await.unwrap();
+    ///     }
+    /// });
+    ///
+    /// let mut buf = Vec::new();
+    /// loop {
+    ///     match r.drain_into_blocking(&mut buf).await {
+    ///         Ok(count) => {
+    ///             assert!(count > 0);
+    ///             // process buf...
+    ///             buf.clear();
+    ///         }
+    ///         Err(_) => break, // channel closed
+    ///     }
+    /// }
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[inline(always)]
+    pub fn drain_into_blocking<'a, 'b>(
+        &'a self,
+        vec: &'b mut Vec<T>,
+    ) -> DrainIntoBlockingFuture<'a, 'b, T> {
+        DrainIntoBlockingFuture::new(&self.internal, vec)
+    }
+
     shared_recv_impl!();
     /// Returns sync cloned version of the receiver.
     ///
