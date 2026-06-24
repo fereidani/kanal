@@ -458,6 +458,166 @@ mod asyncs {
         send_many(None).await;
     }
 
+    async fn drain_into_blocking(channel_size: Option<usize>) {
+        let (s, r) = new(channel_size);
+        tokio::spawn(async move {
+            let mut msgs = (0..MESSAGES).collect::<VecDeque<usize>>();
+            s.send_many(&mut msgs).await.unwrap();
+        });
+
+        let mut vec = Vec::new();
+        let mut total = 0;
+        while total < MESSAGES {
+            let count = r.drain_into_blocking(&mut vec).await.unwrap();
+            assert!(count > 0);
+            total += count;
+        }
+        assert_eq!(vec.len(), MESSAGES);
+        for (i, v) in vec.iter().enumerate() {
+            assert_eq!(*v, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_0() {
+        drain_into_blocking(Some(0)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_1() {
+        drain_into_blocking(Some(1)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_u() {
+        drain_into_blocking(None).await;
+    }
+
+    // Test that drain_into_blocking actually awaits when no data is available
+    async fn drain_into_blocking_waits(channel_size: Option<usize>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (s, r) = new(channel_size);
+        let received = Arc::new(AtomicBool::new(false));
+        let received_clone = received.clone();
+
+        // Spawn receiver task that will await for data
+        let handle = tokio::spawn(async move {
+            let mut vec = Vec::new();
+            let count = r.drain_into_blocking(&mut vec).await.unwrap();
+            received_clone.store(true, Ordering::SeqCst);
+            assert!(count > 0);
+            vec
+        });
+
+        // Give receiver time to start awaiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Receiver should still be awaiting (no data sent yet)
+        assert!(
+            !received.load(Ordering::SeqCst),
+            "receiver should be awaiting"
+        );
+
+        // Now send data
+        s.send(42usize).await.unwrap();
+
+        // Wait for receiver to complete
+        let vec = handle.await.unwrap();
+        assert!(
+            received.load(Ordering::SeqCst),
+            "receiver should have received"
+        );
+        assert_eq!(vec, vec![42]);
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_waits_0() {
+        drain_into_blocking_waits(Some(0)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_waits_1() {
+        drain_into_blocking_waits(Some(1)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_waits_u() {
+        drain_into_blocking_waits(None).await;
+    }
+
+    // Test drain_into_blocking with multiple concurrent senders
+    async fn drain_into_blocking_mpsc(channel_size: Option<usize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        const NUM_SENDERS: usize = 10;
+        const MSGS_PER_SENDER: usize = 100;
+        const TOTAL_MSGS: usize = NUM_SENDERS * MSGS_PER_SENDER;
+
+        let (s, r) = new(channel_size);
+        let sent_count = Arc::new(AtomicUsize::new(0));
+
+        // Spawn multiple sender tasks
+        let handles: Vec<_> = (0..NUM_SENDERS)
+            .map(|sender_id| {
+                let s = s.clone();
+                let sent_count = sent_count.clone();
+                tokio::spawn(async move {
+                    for i in 0..MSGS_PER_SENDER {
+                        s.send(sender_id * MSGS_PER_SENDER + i).await.unwrap();
+                        sent_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        drop(s); // Drop original sender
+
+        // Receiver uses drain_into_blocking to collect all messages
+        let mut vec = Vec::new();
+        loop {
+            match r.drain_into_blocking(&mut vec).await {
+                Ok(count) => {
+                    assert!(count > 0);
+                    if vec.len() >= TOTAL_MSGS {
+                        break;
+                    }
+                }
+                Err(_) => break, // Channel closed
+            }
+        }
+
+        // Wait for all senders to complete
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(vec.len(), TOTAL_MSGS);
+
+        // Verify all messages received (order may vary due to concurrency)
+        vec.sort();
+        for (i, v) in vec.iter().enumerate() {
+            assert_eq!(*v, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_mpsc_0() {
+        drain_into_blocking_mpsc(Some(0)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_mpsc_1() {
+        drain_into_blocking_mpsc(Some(1)).await;
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_mpsc_u() {
+        drain_into_blocking_mpsc(None).await;
+    }
+
     #[tokio::test]
     async fn one_msg() {
         let (s, r) = bounded_async::<u8>(1);

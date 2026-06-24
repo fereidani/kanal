@@ -542,3 +542,163 @@ fn send_many_1() {
 fn send_many_u() {
     send_many(None);
 }
+
+fn drain_into_blocking(channel_size: Option<usize>) {
+    let (s, r) = new(channel_size);
+    std::thread::spawn(move || {
+        let mut msgs: std::collections::VecDeque<usize> = (0..MESSAGES).collect();
+        s.send_many(&mut msgs).unwrap();
+    });
+
+    let mut vec = Vec::new();
+    let mut total = 0;
+    while total < MESSAGES {
+        let count = r.drain_into_blocking(&mut vec).unwrap();
+        assert!(count > 0);
+        total += count;
+    }
+    assert_eq!(vec.len(), MESSAGES);
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(*v, i);
+    }
+}
+
+#[test]
+fn drain_into_blocking_0() {
+    drain_into_blocking(Some(0));
+}
+
+#[test]
+fn drain_into_blocking_1() {
+    drain_into_blocking(Some(1));
+}
+
+#[test]
+fn drain_into_blocking_u() {
+    drain_into_blocking(None);
+}
+
+// Test that drain_into_blocking actually blocks when no data is available
+fn drain_into_blocking_waits(channel_size: Option<usize>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let (s, r) = new(channel_size);
+    let received = Arc::new(AtomicBool::new(false));
+    let received_clone = received.clone();
+
+    // Spawn receiver thread that will block waiting for data
+    let handle = std::thread::spawn(move || {
+        let mut vec = Vec::new();
+        let count = r.drain_into_blocking(&mut vec).unwrap();
+        received_clone.store(true, Ordering::SeqCst);
+        assert!(count > 0);
+        vec
+    });
+
+    // Give receiver time to start blocking
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Receiver should still be blocked (no data sent yet)
+    assert!(
+        !received.load(Ordering::SeqCst),
+        "receiver should be blocking"
+    );
+
+    // Now send data
+    s.send(42usize).unwrap();
+
+    // Wait for receiver to complete
+    let vec = handle.join().unwrap();
+    assert!(
+        received.load(Ordering::SeqCst),
+        "receiver should have received"
+    );
+    assert_eq!(vec, vec![42]);
+}
+
+#[test]
+fn drain_into_blocking_waits_0() {
+    drain_into_blocking_waits(Some(0));
+}
+
+#[test]
+fn drain_into_blocking_waits_1() {
+    drain_into_blocking_waits(Some(1));
+}
+
+#[test]
+fn drain_into_blocking_waits_u() {
+    drain_into_blocking_waits(None);
+}
+
+// Test drain_into_blocking with multiple concurrent senders
+fn drain_into_blocking_mpsc(channel_size: Option<usize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const NUM_SENDERS: usize = 10;
+    const MSGS_PER_SENDER: usize = 100;
+    const TOTAL_MSGS: usize = NUM_SENDERS * MSGS_PER_SENDER;
+
+    let (s, r) = new(channel_size);
+    let sent_count = Arc::new(AtomicUsize::new(0));
+
+    // Spawn multiple sender threads
+    let handles: Vec<_> = (0..NUM_SENDERS)
+        .map(|sender_id| {
+            let s = s.clone();
+            let sent_count = sent_count.clone();
+            std::thread::spawn(move || {
+                for i in 0..MSGS_PER_SENDER {
+                    s.send(sender_id * MSGS_PER_SENDER + i).unwrap();
+                    sent_count.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        })
+        .collect();
+
+    drop(s); // Drop original sender
+
+    // Receiver uses drain_into_blocking to collect all messages
+    let mut vec = Vec::new();
+    loop {
+        match r.drain_into_blocking(&mut vec) {
+            Ok(count) => {
+                assert!(count > 0);
+                if vec.len() >= TOTAL_MSGS {
+                    break;
+                }
+            }
+            Err(_) => break, // Channel closed
+        }
+    }
+
+    // Wait for all senders to complete
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert_eq!(vec.len(), TOTAL_MSGS);
+
+    // Verify all messages received (order may vary due to concurrency)
+    vec.sort();
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(*v, i);
+    }
+}
+
+#[test]
+fn drain_into_blocking_mpsc_0() {
+    drain_into_blocking_mpsc(Some(0));
+}
+
+#[test]
+fn drain_into_blocking_mpsc_1() {
+    drain_into_blocking_mpsc(Some(1));
+}
+
+#[test]
+fn drain_into_blocking_mpsc_u() {
+    drain_into_blocking_mpsc(None);
+}
