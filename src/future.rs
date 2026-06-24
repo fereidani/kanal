@@ -5,7 +5,7 @@ use crate::{
 };
 use core::{cell::UnsafeCell, fmt::Debug, marker::PhantomPinned, pin::Pin, task::Poll};
 
-use branches::{likely, unlikely};
+use branches::unlikely;
 use futures_core::{FusedStream, Future, Stream};
 
 #[repr(u8)]
@@ -176,13 +176,16 @@ impl<T> Future for SendFuture<'_, T> {
                         return Poll::Pending;
                     }
                     drop(internal);
-                    // signal is already shared, and data will be available shortly, so wait
-                    // synchronously and return the result note:
-                    // it's not possible safely to update waker after the signal is shared,
-                    // but we know data will be ready shortly,
-                    //   we can wait synchronously and receive it.
-                    this.sig.set_state(FutureState::Done);
-                    if likely(this.sig.blocking_wait()) {
+                    // The signal was already popped from the wait list by a receiver,
+                    // so it is no longer safe to update the waker. The receiver is
+                    // committed to reading (or terminating) the signal, so wait
+                    // synchronously for the result. The state must NOT be set to Done
+                    // before waiting: Done is greater than LOCKED_STARVATION, which would
+                    // make blocking_wait return false immediately and report a spurious
+                    // error (and reclaim data that was in fact delivered).
+                    let delivered = this.sig.blocking_wait();
+                    this.sig.set_state_relaxed(FutureState::Done);
+                    if delivered {
                         return Poll::Ready(Ok(()));
                     }
                     // the data failed to move, we can safely return it to user
@@ -341,14 +344,17 @@ impl<T> Future for ReceiveFuture<'_, T> {
                             Poll::Pending
                         } else {
                             drop(internal);
-                            // the signal is already shared, and data will be available shortly,
-                            // so wait synchronously and return the result
-                            // note: it's not possible safely to update waker after the signal
-                            // is shared, but we know data will be ready shortly,
-                            //   we can wait synchronously and receive it.
+                            // The signal was already popped from the wait list by a
+                            // sender, so it is no longer safe to update the waker.
+                            // The sender is committed to delivering (or terminating) the
+                            // signal, so wait synchronously for the result. The state must
+                            // NOT be set to Done before waiting: Done is greater than
+                            // LOCKED_STARVATION, which would make blocking_wait return
+                            // false immediately and report a spurious error.
+                            let delivered = this.sig.blocking_wait();
                             this.sig.set_state_relaxed(FutureState::Done);
-                            if likely(this.sig.blocking_wait()) {
-                                // SAFETY: data is received and safe to read
+                            if delivered {
+                                // SAFETY: the sender wrote the data, it is safe to read
                                 Poll::Ready(Ok(unsafe { this.sig.assume_init() }))
                             } else {
                                 Poll::Ready(Err(ReceiveError()))

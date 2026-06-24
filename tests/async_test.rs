@@ -585,4 +585,72 @@ mod asyncs {
             rx.recv().await.unwrap();
         }
     }
+
+    // Regression test for a spurious early-termination bug in the async receive
+    // future's "signal already shared" fallback. When the future was re-polled
+    // while pending with a changed waker and the peer had already taken the
+    // signal out of the wait list, the code used to set the signal state to
+    // Done before calling blocking_wait(). Because Done is greater than
+    // LOCKED_STARVATION, blocking_wait() returned false immediately and the
+    // receiver reported a spurious error. Under stream().buffer_unordered() with
+    // a yield this race fires continuously, ending the stream early and
+    // deadlocking the synchronous producer on the next rendezvous.
+    //
+    // The race is timing dependent and is reliably triggered only under release
+    // optimizations (the original bug report was release-only); the test never
+    // produces a false failure, so running it in debug is harmless even though
+    // it may not reproduce the race there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_buffer_unordered_rendezvous_integrity() {
+        use futures::StreamExt;
+
+        #[derive(Debug)]
+        struct Payload {
+            id: u64,
+            values: Vec<u64>,
+        }
+
+        const N: u64 = 10_000;
+
+        let (async_sender, receiver) = bounded_async::<Payload>(0);
+        // Drive the producer from a synchronous sender on a dedicated thread,
+        // then drop the async sender so only the sync producer remains.
+        let sender = async_sender.as_sync().clone();
+        drop(async_sender);
+
+        let producer = std::thread::spawn(move || {
+            for id in 0..N {
+                sender
+                    .send(Payload {
+                        id,
+                        values: vec![id; 16],
+                    })
+                    .unwrap();
+            }
+        });
+
+        // A regression either ends the stream early (fewer than N items) or
+        // deadlocks the rendezvous; the timeout makes both fail fast instead of
+        // hanging the test runner.
+        let count = tokio::time::timeout(Duration::from_secs(30), async {
+            receiver
+                .stream()
+                .map(|payload| async move {
+                    tokio::task::yield_now().await;
+                    assert!(
+                        payload.values.iter().all(|value| *value == payload.id),
+                        "corrupted payload: {payload:?}"
+                    );
+                })
+                .buffer_unordered(2)
+                .count()
+                .await
+        })
+        .await
+        .expect("stream did not finish within timeout (deadlock regression?)");
+
+        assert_eq!(count, N as usize, "stream ended early; lost messages");
+
+        producer.join().expect("producer thread panicked");
+    }
 }
