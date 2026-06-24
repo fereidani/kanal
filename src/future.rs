@@ -491,7 +491,7 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
 
                 match fut.poll(cx) {
                     Poll::Ready(res) => {
-                        if this.elements.is_empty() {
+                        if res.is_err() || this.elements.is_empty() {
                             this.finished = true;
                             return Poll::Ready(res);
                         }
