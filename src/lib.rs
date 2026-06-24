@@ -525,8 +525,6 @@ macro_rules! shared_recv_impl {
         /// # anyhow::Ok(())
         /// ```
         pub fn drain_into(&self, vec: &mut Vec<T>) -> Result<usize, ReceiveError> {
-            let vec_initial_length = vec.len();
-            let remaining_cap = vec.capacity() - vec_initial_length;
             let mut internal = acquire_internal(&self.internal);
             if unlikely(internal.recv_count == 0) {
                 return Err(ReceiveError());
@@ -538,9 +536,10 @@ macro_rules! shared_recv_impl {
                     internal.wait_list.len()
                 }
             };
-            if required_cap > remaining_cap {
-                vec.reserve(vec_initial_length + required_cap - remaining_cap);
-            }
+            // Reserve room for every element we are about to drain; Vec::reserve
+            // guarantees capacity for `len + required_cap` and is a no-op when the
+            // existing capacity is already sufficient.
+            vec.reserve(required_cap);
             while let Some(v) = internal.queue.pop_front() {
                 vec.push(v);
             }
