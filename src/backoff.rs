@@ -1,8 +1,10 @@
-/// This module provides various backoff strategies that can be used to reduce
-/// the amount of busy waiting and improve the efficiency of concurrent systems.
+/// This module provides various backoff strategies that can be used to
+/// reduce the amount of busy waiting and improve the efficiency of
+/// concurrent systems.
 ///
-/// The main idea behind separating backoff into an independent module is that
-/// it makes it easier to test and compare different backoff solutions.
+/// The main idea behind separating backoff into an independent module is
+/// that it makes it easier to test and compare different backoff
+/// solutions.
 use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
@@ -30,9 +32,9 @@ pub fn spin_hint() {
 #[allow(dead_code)]
 #[inline(always)]
 pub fn yield_os() {
-    // On Unix systems, this function uses libc's sched_yield(), which cooperatively
-    // gives up a random timeslice to another thread. On Windows systems, it
-    // uses SwitchToThread(), which does the same thing.
+    // On Unix systems, this function uses libc's sched_yield(), which
+    // cooperatively gives up a random timeslice to another thread. On
+    // Windows systems, it uses SwitchToThread(), which does the same thing.
     std::thread::yield_now();
 }
 
@@ -66,8 +68,8 @@ pub fn spin_rand() {
 fn random_u7() -> u8 {
     static SEED: AtomicU8 = AtomicU8::new(13);
     const MULTIPLIER: u8 = 113;
-    // Increment the seed atomically. Relaxed ordering is enough as we only need an
-    // atomic operation on the SEED itself.
+    // Increment the seed atomically. Relaxed ordering is enough as we only need
+    // an atomic operation on the SEED itself.
     let seed = SEED.fetch_add(1, Ordering::Relaxed);
     // Use a LCG-like algorithm to generate a random number from the seed.
     seed.wrapping_mul(MULTIPLIER) & 0x7F
@@ -106,7 +108,10 @@ pub fn get_parallelism() -> usize {
     if unlikely(p == 0) {
         // Try to get the degree of parallelism from available_parallelism.
         // If it is not available, default to 1.
-        p = usize::from(thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()));
+        p = usize::from(
+            thread::available_parallelism()
+                .unwrap_or(NonZeroUsize::new(1).unwrap()),
+        );
         PARALLELISM.store(p, Ordering::Release);
     }
     // Return the computed degree of parallelism.
@@ -136,11 +141,12 @@ pub fn get_parallelism() -> usize {
 #[inline(always)]
 pub fn spin_cond<F: Fn() -> bool>(cond: F) {
     if get_parallelism() == 1 {
-        // For environments with limited resources, such as small Virtual Private
-        // Servers (VPS) or single-core systems, active spinning may lead to inefficient
-        // CPU usage without performance benefits. This is due to the fact that there's
-        // only one thread of execution, making it impossible for another thread to make
-        // progress during the spin wait period.
+        // For environments with limited resources, such as small Virtual
+        // Private Servers (VPS) or single-core systems, active spinning
+        // may lead to inefficient CPU usage without performance
+        // benefits. This is due to the fact that there's
+        // only one thread of execution, making it impossible for another thread
+        // to make progress during the spin wait period.
         while unlikely(!cond()) {
             yield_os();
         }
@@ -236,7 +242,8 @@ pub(crate) fn spin_option_yield_only<T>(
 ) -> Option<T> {
     // exit early if predicate is already satisfied
     return_if_some!(predicate());
-    let timeout = std::time::Instant::now().checked_add(Duration::from_micros(spin_micros))?;
+    let timeout = std::time::Instant::now()
+        .checked_add(Duration::from_micros(spin_micros))?;
     loop {
         for _ in 0..32 {
             yield_os();

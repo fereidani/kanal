@@ -2,11 +2,6 @@
 mod utils;
 #[cfg(feature = "async")]
 mod asyncs {
-    use crate::utils::*;
-    use futures_core::FusedStream;
-    use kanal::{
-        bounded_async, unbounded_async, AsyncReceiver, AsyncSender, ReceiveError, SendError,
-    };
     use std::{
         collections::VecDeque,
         sync::{
@@ -15,6 +10,14 @@ mod asyncs {
         },
         time::Duration,
     };
+
+    use futures_core::FusedStream;
+    use kanal::{
+        bounded_async, unbounded_async, AsyncReceiver, AsyncSender,
+        ReceiveError, SendError,
+    };
+
+    use crate::utils::*;
 
     fn new<T>(cap: Option<usize>) -> (AsyncSender<T>, AsyncReceiver<T>) {
         match cap {
@@ -592,9 +595,9 @@ mod asyncs {
     // signal out of the wait list, the code used to set the signal state to
     // Done before calling blocking_wait(). Because Done is greater than
     // LOCKED_STARVATION, blocking_wait() returned false immediately and the
-    // receiver reported a spurious error. Under stream().buffer_unordered() with
-    // a yield this race fires continuously, ending the stream early and
-    // deadlocking the synchronous producer on the next rendezvous.
+    // receiver reported a spurious error. Under stream().buffer_unordered()
+    // with a yield this race fires continuously, ending the stream early
+    // and deadlocking the synchronous producer on the next rendezvous.
     //
     // The race is timing dependent and is reliably triggered only under release
     // optimizations (the original bug report was release-only); the test never

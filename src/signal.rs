@@ -1,4 +1,3 @@
-use crate::{backoff, pointer::KanalPtr};
 use core::{
     cell::UnsafeCell,
     fmt::Debug,
@@ -15,6 +14,8 @@ use std::{
 
 use branches::{likely, unlikely};
 use cacheguard::CacheGuard;
+
+use crate::{backoff, pointer::KanalPtr};
 
 const UNINIT: usize = 0;
 const LOCKED: usize = UNINIT + 1;
@@ -163,7 +164,9 @@ impl<T> SyncSignal<T> {
         unsafe {
             (*this).ptr.write(data);
         }
-        if unlikely((*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION) {
+        if unlikely(
+            (*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION,
+        ) {
             thread.unpark();
         }
     }
@@ -171,7 +174,9 @@ impl<T> SyncSignal<T> {
     pub(crate) unsafe fn read_data(this: *const Self) -> T {
         let thread = ManuallyDrop::take(&mut *(*this).thread.get());
         let r = (*this).ptr.read();
-        if unlikely((*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION) {
+        if unlikely(
+            (*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION,
+        ) {
             thread.unpark();
         }
         r
@@ -184,7 +189,10 @@ impl<T> SyncSignal<T> {
     }
     pub(crate) unsafe fn terminate(this: *const Self) {
         let thread = ManuallyDrop::take(&mut *(*this).thread.get());
-        if unlikely((*this).state.swap(TERMINATED, Ordering::AcqRel) == LOCKED_STARVATION) {
+        if unlikely(
+            (*this).state.swap(TERMINATED, Ordering::AcqRel)
+                == LOCKED_STARVATION,
+        ) {
             thread.unpark();
         }
     }
@@ -199,7 +207,8 @@ impl<T> SyncSignal<T> {
             return v == UNLOCKED;
         }
         let now = Instant::now();
-        let spin_timeout = now.checked_add(Duration::from_micros(25)).unwrap_or(now);
+        let spin_timeout =
+            now.checked_add(Duration::from_micros(25)).unwrap_or(now);
         // 25 microseconds or 256 os yields, whichever happens first
         for _ in 0..4 {
             for _ in 0..64 {
@@ -288,7 +297,8 @@ const fn no_op_waker() -> Waker {
     const unsafe fn wake_by_ref(_: *const ()) {}
     const unsafe fn drop(_: *const ()) {}
 
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone, wake, wake_by_ref, drop);
     const unsafe fn raw_waker() -> RawWaker {
         RawWaker::new(core::ptr::null(), &VTABLE)
     }
@@ -337,7 +347,9 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub(crate) const fn new_send_finished() -> Self {
         Self {
-            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(FutureState::Success))),
+            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(
+                FutureState::Success,
+            ))),
             data: UnsafeCell::new(MaybeUninit::uninit()),
             waker: UnsafeCell::new(no_op_waker()),
             _pinned: core::marker::PhantomPinned,
@@ -413,10 +425,10 @@ impl<T> AsyncSignal<T> {
     pub(crate) unsafe fn will_wake(&self, waker: &Waker) -> bool {
         (&*self.waker.get()).will_wake(waker)
     }
-    // SAFETY: this function is only safe when owner of signal have exclusive lock
-    // over channel,  this avoids another reader to clone the waker while we are
-    // updating it.  this function should not be called if signal is
-    // uninitialized or already shared.
+    // SAFETY: this function is only safe when owner of signal have exclusive
+    // lock over channel,  this avoids another reader to clone the waker
+    // while we are updating it.  this function should not be called if
+    // signal is uninitialized or already shared.
     #[inline(always)]
     pub(crate) unsafe fn update_waker(&self, waker: &Waker) {
         *self.waker.get() = waker.clone();

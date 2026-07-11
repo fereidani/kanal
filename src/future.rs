@@ -1,12 +1,15 @@
+use core::{
+    cell::UnsafeCell, fmt::Debug, marker::PhantomPinned, pin::Pin, task::Poll,
+};
+
+use branches::unlikely;
+use futures_core::{FusedStream, Future, Stream};
+
 use crate::{
     internal::{acquire_internal, Internal},
     signal::AsyncSignal,
     AsyncReceiver, ReceiveError, SendError,
 };
-use core::{cell::UnsafeCell, fmt::Debug, marker::PhantomPinned, pin::Pin, task::Poll};
-
-use branches::unlikely;
-use futures_core::{FusedStream, Future, Stream};
 
 #[repr(u8)]
 #[derive(PartialEq, Clone, Copy)]
@@ -70,12 +73,13 @@ impl<T> Drop for SendFuture<'_, T> {
         if unlikely(!state.is_done()) {
             // If we are still pending, try to cancel the send operation.
             // Cancellation succeeds → we still own the data and must drop it.
-            // Otherwise the receiver may already own the payload; we wait for it
-            // to finish before dropping the future.
+            // Otherwise the receiver may already own the payload; we wait for
+            // it to finish before dropping the future.
             let mut need_drop = true;
 
             if state.is_pending()
-                && acquire_internal(self.internal).cancel_send_signal(self.sig.as_tagged_ptr())
+                && acquire_internal(self.internal)
+                    .cancel_send_signal(self.sig.as_tagged_ptr())
             {
                 // Cancellation succeeded – we still own the data.
                 need_drop = true;
@@ -116,7 +120,10 @@ impl<T> Future for SendFuture<'_, T> {
     type Output = Result<(), SendError<T>>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         match this.sig.state() {
@@ -126,9 +133,12 @@ impl<T> Future for SendFuture<'_, T> {
                 if unlikely(internal.recv_count == 0) {
                     drop(internal);
                     this.sig.set_state_relaxed(FutureState::Done);
-                    // SAFETY: the data failed to move, we can safely return it to user
+                    // SAFETY: the data failed to move, we can safely return it
+                    // to user
                     unsafe {
-                        return Poll::Ready(Err(SendError(this.sig.assume_init())));
+                        return Poll::Ready(Err(SendError(
+                            this.sig.assume_init(),
+                        )));
                     }
                 }
                 if let Some(first) = internal.next_recv() {
@@ -162,13 +172,16 @@ impl<T> Future for SendFuture<'_, T> {
             FutureState::Pending => {
                 mark_branch_unlikely();
                 let waker = cx.waker();
-                // SAFETY: signal waker is valid as we inited it in future pending state
+                // SAFETY: signal waker is valid as we inited it in future
+                // pending state
                 if unlikely(unsafe { !this.sig.will_wake(waker) }) {
-                    // Waker is changed and we need to update waker in the waiting list
+                    // Waker is changed and we need to update waker in the
+                    // waiting list
                     let internal = acquire_internal(this.internal);
                     if internal.send_signal_exists(this.sig.as_tagged_ptr()) {
-                        // SAFETY: signal is not shared with other thread yet so it's safe to
-                        // update waker locally
+                        // SAFETY: signal is not shared with other thread yet so
+                        // it's safe to update waker
+                        // locally
                         unsafe {
                             this.sig.update_waker(waker);
                         }
@@ -176,20 +189,25 @@ impl<T> Future for SendFuture<'_, T> {
                         return Poll::Pending;
                     }
                     drop(internal);
-                    // The signal was already popped from the wait list by a receiver,
-                    // so it is no longer safe to update the waker. The receiver is
+                    // The signal was already popped from the wait list by a
+                    // receiver, so it is no longer safe to
+                    // update the waker. The receiver is
                     // committed to reading (or terminating) the signal, so wait
-                    // synchronously for the result. The state must NOT be set to Done
-                    // before waiting: Done is greater than LOCKED_STARVATION, which would
-                    // make blocking_wait return false immediately and report a spurious
-                    // error (and reclaim data that was in fact delivered).
+                    // synchronously for the result. The state must NOT be set
+                    // to Done before waiting: Done is
+                    // greater than LOCKED_STARVATION, which would
+                    // make blocking_wait return false immediately and report a
+                    // spurious error (and reclaim data that
+                    // was in fact delivered).
                     let delivered = this.sig.blocking_wait();
                     this.sig.set_state_relaxed(FutureState::Done);
                     if delivered {
                         return Poll::Ready(Ok(()));
                     }
                     // the data failed to move, we can safely return it to user
-                    Poll::Ready(Err(SendError(unsafe { this.sig.assume_init() })))
+                    Poll::Ready(Err(SendError(unsafe {
+                        this.sig.assume_init()
+                    })))
                 } else {
                     Poll::Pending
                 }
@@ -197,7 +215,8 @@ impl<T> Future for SendFuture<'_, T> {
             FutureState::Failure => {
                 mark_branch_unlikely();
                 this.sig.set_state_relaxed(FutureState::Done);
-                // SAFETY: the data failed to move, we can safely return it to user
+                // SAFETY: the data failed to move, we can safely return it to
+                // user
                 Poll::Ready(Err(SendError(unsafe { this.sig.assume_init() })))
             }
             FutureState::Done => {
@@ -224,20 +243,22 @@ impl<T> Drop for ReceiveFuture<'_, T> {
         if unlikely(!state.is_done()) {
             // try to cancel the signal if we are still waiting
             if state.is_pending()
-                && acquire_internal(self.internal).cancel_recv_signal(self.sig.as_tagged_ptr())
+                && acquire_internal(self.internal)
+                    .cancel_recv_signal(self.sig.as_tagged_ptr())
             {
                 // signal canceled
                 return;
             }
             // we failed to cancel the signal,
-            // either it is unregistered or a sender got signal ownership, receiver should
-            // wait until the response
+            // either it is unregistered or a sender got signal ownership,
+            // receiver should wait until the response
             if !state.is_unregistered() && self.sig.blocking_wait() {
-                // got ownership of data that is not going to be used ever again, so drop it
-                // this is actually a bug in user code but we should handle it gracefully
+                // got ownership of data that is not going to be used ever
+                // again, so drop it this is actually a bug in
+                // user code but we should handle it gracefully
                 // and we warn user in debug mode
-                // SAFETY: data is not moved it's safe to drop it or put it back to the channel
-                // queue
+                // SAFETY: data is not moved it's safe to drop it or put it back
+                // to the channel queue
                 unsafe {
                     if self.internal.capacity() == 0 {
                         #[cfg(debug_assertions)]
@@ -279,7 +300,10 @@ impl<T> Future for ReceiveFuture<'_, T> {
     type Output = Result<T, ReceiveError>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         loop {
@@ -295,7 +319,8 @@ impl<T> Future for ReceiveFuture<'_, T> {
                     if cap > 0 {
                         if let Some(v) = internal.queue.pop_front() {
                             if let Some(t) = internal.next_send() {
-                                // if there is a sender take its data and push it into the queue
+                                // if there is a sender take its data and push
+                                // it into the queue
                                 unsafe { internal.queue.push_back(t.recv()) }
                             }
                             drop(internal);
@@ -313,7 +338,8 @@ impl<T> Future for ReceiveFuture<'_, T> {
                         return Poll::Ready(Err(ReceiveError()));
                     }
                     this.sig.set_state(FutureState::Pending);
-                    // SAFETY: waker is NOOP and not shared yet, it is safe to init it here
+                    // SAFETY: waker is NOOP and not shared yet, it is safe to
+                    // init it here
                     unsafe {
                         this.sig.update_waker(cx.waker());
                     }
@@ -329,13 +355,16 @@ impl<T> Future for ReceiveFuture<'_, T> {
                 }
                 FutureState::Pending => {
                     let waker = cx.waker();
-                    // SAFETY: signal waker is valid as we inited it in future pending state
+                    // SAFETY: signal waker is valid as we inited it in future
+                    // pending state
                     if unsafe { !this.sig.will_wake(waker) } {
-                        // the Waker is changed and we need to update waker in the waiting
-                        // list
+                        // the Waker is changed and we need to update waker in
+                        // the waiting list
                         let internal = acquire_internal(this.internal);
-                        if internal.recv_signal_exists(this.sig.as_tagged_ptr()) {
-                            // SAFETY: signal is not shared with other thread yet so it's safe to
+                        if internal.recv_signal_exists(this.sig.as_tagged_ptr())
+                        {
+                            // SAFETY: signal is not shared with other thread
+                            // yet so it's safe to
                             // update waker locally
                             unsafe {
                                 this.sig.update_waker(waker);
@@ -344,18 +373,25 @@ impl<T> Future for ReceiveFuture<'_, T> {
                             Poll::Pending
                         } else {
                             drop(internal);
-                            // The signal was already popped from the wait list by a
-                            // sender, so it is no longer safe to update the waker.
-                            // The sender is committed to delivering (or terminating) the
-                            // signal, so wait synchronously for the result. The state must
-                            // NOT be set to Done before waiting: Done is greater than
-                            // LOCKED_STARVATION, which would make blocking_wait return
+                            // The signal was already popped from the wait list
+                            // by a sender, so it is
+                            // no longer safe to update the waker.
+                            // The sender is committed to delivering (or
+                            // terminating) the
+                            // signal, so wait synchronously for the result. The
+                            // state must NOT be set
+                            // to Done before waiting: Done is greater than
+                            // LOCKED_STARVATION, which would make blocking_wait
+                            // return
                             // false immediately and report a spurious error.
                             let delivered = this.sig.blocking_wait();
                             this.sig.set_state_relaxed(FutureState::Done);
                             if delivered {
-                                // SAFETY: the sender wrote the data, it is safe to read
-                                Poll::Ready(Ok(unsafe { this.sig.assume_init() }))
+                                // SAFETY: the sender wrote the data, it is safe
+                                // to read
+                                Poll::Ready(Ok(unsafe {
+                                    this.sig.assume_init()
+                                }))
                             } else {
                                 Poll::Ready(Err(ReceiveError()))
                             }
@@ -445,7 +481,8 @@ impl<'a, T> ReceiveStream<'a, T> {
 #[derive(Debug)]
 pub struct SendManyFuture<'a, 'b, T> {
     internal: &'a Internal<T>,
-    // This is a UnsafeCell, because it can be shared in WaitQueue of the channel
+    // This is a UnsafeCell, because it can be shared in WaitQueue of the
+    // channel
     fut: UnsafeCell<SendFuture<'a, T>>,
     // Elements that we are writing to the channel
     elements: &'b mut std::collections::VecDeque<T>,
@@ -477,7 +514,10 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
     type Output = Result<(), SendError<T>>;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         loop {
@@ -486,7 +526,8 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             }
 
             if this.in_wait_queue {
-                // SAFETY: this is pinned therefore it's safe to create a pinned reference
+                // SAFETY: this is pinned therefore it's safe to create a pinned
+                // reference
                 let fut = unsafe { Pin::new_unchecked(this.fut.get_mut()) };
 
                 match fut.poll(cx) {
@@ -547,7 +588,8 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             }
 
             // -----------------------------------------------------------------
-            // 2) Fill the channel’s queue (if it has a bounded/unbounded capacity).
+            // 2) Fill the channel’s queue (if it has a bounded/unbounded
+            //    capacity).
             // -----------------------------------------------------------------
             if cap > 0 {
                 while internal.queue.len() < cap {
@@ -566,8 +608,8 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             // 3) If there are still elements, send the next one via a signal
             // -----------------------------------------------------------------
             if let Some(v) = this.elements.pop_front() {
-                // SAFETY: we checked above and we are not in any wait queue as we are not
-                // registered in the queue yet.
+                // SAFETY: we checked above and we are not in any wait queue as
+                // we are not registered in the queue yet.
                 unsafe {
                     this.fut.get_mut().sig.reset_send(v);
                 }
@@ -576,8 +618,8 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
 
                 this.in_wait_queue = true;
                 drop(internal);
-                // go poll the future to register the waker or return early if message already
-                // arrived
+                // go poll the future to register the waker or return early if
+                // message already arrived
                 continue;
             } else {
                 // No more elements left.

@@ -3,14 +3,16 @@ use crate::mutex::{Mutex, MutexGuard};
 use crate::signal::DynamicSignal;
 extern crate alloc;
 use alloc::collections::VecDeque;
-use branches::unlikely;
-use cacheguard::CacheGuard;
 use core::fmt::Debug;
 #[cfg(feature = "std-mutex")]
 use std::sync::{Mutex, MutexGuard};
 
+use branches::unlikely;
+use cacheguard::CacheGuard;
+
 pub(crate) struct Internal<T> {
-    // The cache guard to keep internal pointer in cache, it works with both std mutex and mutex.rs
+    // The cache guard to keep internal pointer in cache, it works with both
+    // std mutex and mutex.rs
     _guard: CacheGuard<()>,
     /// The internal channel object
     internal: *mut (Mutex<ChannelInternal<T>>, usize),
@@ -52,13 +54,17 @@ impl<T> Internal<T> {
 
         Internal {
             _guard: CacheGuard::new(()),
-            internal: Box::into_raw(Box::new((Mutex::new(ret), abstract_capacity))),
+            internal: Box::into_raw(Box::new((
+                Mutex::new(ret),
+                abstract_capacity,
+            ))),
         }
     }
 
     #[inline(always)]
     pub(crate) fn capacity(&self) -> usize {
-        // SAFETY: capacity is stored alongside the internal mutex as a read only data
+        // SAFETY: capacity is stored alongside the internal mutex as a read
+        // only data
         unsafe { (*self.internal).1 }
     }
 
@@ -116,7 +122,9 @@ impl<T> core::ops::Deref for Internal<T> {
 
 /// Acquire mutex guard on channel internal for use in channel operations
 #[inline(always)]
-pub(crate) fn acquire_internal<T>(internal: &'_ Internal<T>) -> MutexGuard<'_, ChannelInternal<T>> {
+pub(crate) fn acquire_internal<T>(
+    internal: &'_ Internal<T>,
+) -> MutexGuard<'_, ChannelInternal<T>> {
     #[cfg(not(feature = "std-mutex"))]
     return internal.lock();
     #[cfg(feature = "std-mutex")]
@@ -209,8 +217,8 @@ impl<T> ChannelInternal<T> {
         if !self.recv_blocking {
             for (i, send) in self.wait_list.iter().enumerate() {
                 if send.eq_ptr(sig) {
-                    // SAFETY: it's safe to cancel owned signal once, we are sure that index is
-                    // valid
+                    // SAFETY: it's safe to cancel owned signal once, we are
+                    // sure that index is valid
                     unsafe {
                         self.wait_list.remove(i).unwrap_unchecked().cancel();
                     }
@@ -227,8 +235,8 @@ impl<T> ChannelInternal<T> {
         if self.recv_blocking {
             for (i, recv) in self.wait_list.iter().enumerate() {
                 if recv.eq_ptr(sig) {
-                    // SAFETY: it's safe to cancel owned signal once, we are sure that index is
-                    // valid
+                    // SAFETY: it's safe to cancel owned signal once, we are
+                    // sure that index is valid
                     unsafe {
                         self.wait_list.remove(i).unwrap_unchecked().cancel();
                     }

@@ -1,5 +1,6 @@
-use branches::likely;
 use core::sync::atomic::{AtomicBool, Ordering};
+
+use branches::likely;
 use lock_api::{GuardSend, RawMutex};
 
 use crate::backoff::*;
@@ -32,7 +33,12 @@ unsafe impl RawMutex for RawMutexLock {
     fn try_lock(&self) -> bool {
         likely(
             self.locked
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange(
+                    false,
+                    true,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
                 .is_ok(),
         )
     }

@@ -1,8 +1,9 @@
 mod common;
 
+use std::{hint::black_box, thread::available_parallelism, time::Duration};
+
 pub use common::*;
 use criterion::*;
-use std::{thread::available_parallelism, time::Duration};
 
 macro_rules! run_bench {
     ($b:expr, $tx:expr, $rx:expr, $writers:expr, $readers:expr) => {

@@ -1,7 +1,4 @@
 mod utils;
-use utils::*;
-
-use kanal::{bounded, unbounded, ReceiveError, Receiver, SendError, Sender};
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -10,6 +7,9 @@ use std::{
     thread,
     time::Duration,
 };
+
+use kanal::{bounded, unbounded, ReceiveError, Receiver, SendError, Sender};
+use utils::*;
 
 fn new<T>(cap: Option<usize>) -> (Sender<T>, Receiver<T>) {
     match cap {
@@ -519,7 +519,8 @@ fn mpmc_u() {
 fn send_many(channel_size: Option<usize>) {
     let (s, r) = new(channel_size);
     std::thread::spawn(move || {
-        let mut msgs: std::collections::VecDeque<usize> = (0..MESSAGES).collect();
+        let mut msgs: std::collections::VecDeque<usize> =
+            (0..MESSAGES).collect();
         s.send_many(&mut msgs).unwrap();
     });
 

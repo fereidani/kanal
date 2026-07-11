@@ -12,10 +12,6 @@ mod error;
 mod future;
 mod signal;
 
-pub use error::*;
-#[cfg(feature = "async")]
-pub use future::*;
-
 #[cfg(feature = "async")]
 use core::mem::transmute;
 use core::{
@@ -27,6 +23,9 @@ use core::{
 use std::{collections::VecDeque, time::Instant};
 
 use branches::unlikely;
+pub use error::*;
+#[cfg(feature = "async")]
+pub use future::*;
 use internal::{acquire_internal, try_acquire_internal, Internal};
 use pointer::KanalPtr;
 use signal::*;
@@ -58,7 +57,7 @@ pub struct Sender<T> {
 ///
 /// ```
 /// let (sender, _r) = kanal::bounded_async::<u64>(0);
-/// let sync_sender=sender.clone_sync();
+/// let sync_sender = sender.clone_sync();
 /// ```
 #[cfg(feature = "async")]
 #[repr(C)]
@@ -127,13 +126,13 @@ macro_rules! shared_impl {
         ///
         /// ```
         /// let (s, r) = kanal::bounded::<u64>(0);
-        /// assert_eq!(s.is_bounded(),true);
-        /// assert_eq!(r.is_bounded(),true);
+        /// assert_eq!(s.is_bounded(), true);
+        /// assert_eq!(r.is_bounded(), true);
         /// ```
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
-        /// assert_eq!(s.is_bounded(),false);
-        /// assert_eq!(r.is_bounded(),false);
+        /// assert_eq!(s.is_bounded(), false);
+        /// assert_eq!(r.is_bounded(), false);
         /// ```
         pub fn is_bounded(&self) -> bool {
             self.internal.capacity() != usize::MAX
@@ -144,11 +143,11 @@ macro_rules! shared_impl {
         ///
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
-        /// assert_eq!(s.len(),0);
-        /// assert_eq!(r.len(),0);
+        /// assert_eq!(s.len(), 0);
+        /// assert_eq!(r.len(), 0);
         /// s.send(10);
-        /// assert_eq!(s.len(),1);
-        /// assert_eq!(r.len(),1);
+        /// assert_eq!(s.len(), 1);
+        /// assert_eq!(r.len(), 1);
         /// ```
         pub fn len(&self) -> usize {
             acquire_internal(&self.internal).queue.len()
@@ -159,8 +158,8 @@ macro_rules! shared_impl {
         ///
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
-        /// assert_eq!(s.is_empty(),true);
-        /// assert_eq!(r.is_empty(),true);
+        /// assert_eq!(s.is_empty(), true);
+        /// assert_eq!(r.is_empty(), true);
         /// ```
         pub fn is_empty(&self) -> bool {
             acquire_internal(&self.internal).queue.is_empty()
@@ -174,11 +173,12 @@ macro_rules! shared_impl {
         /// ```
         /// let (s, r) = kanal::bounded(1);
         /// s.send("Hi!").unwrap();
-        /// assert_eq!(s.is_full(),true);
-        /// assert_eq!(r.is_full(),true);
+        /// assert_eq!(s.is_full(), true);
+        /// assert_eq!(r.is_full(), true);
         /// ```
         pub fn is_full(&self) -> bool {
-            self.internal.capacity() == acquire_internal(&self.internal).queue.len()
+            self.internal.capacity()
+                == acquire_internal(&self.internal).queue.len()
         }
         /// Returns capacity of channel (not the queue)
         /// for unbounded channels, it will return usize::MAX.
@@ -187,13 +187,13 @@ macro_rules! shared_impl {
         ///
         /// ```
         /// let (s, r) = kanal::bounded::<u64>(0);
-        /// assert_eq!(s.capacity(),0);
-        /// assert_eq!(r.capacity(),0);
+        /// assert_eq!(s.capacity(), 0);
+        /// assert_eq!(r.capacity(), 0);
         /// ```
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
-        /// assert_eq!(s.capacity(),usize::MAX);
-        /// assert_eq!(r.capacity(),usize::MAX);
+        /// assert_eq!(s.capacity(), usize::MAX);
+        /// assert_eq!(r.capacity(), usize::MAX);
         /// ```
         pub fn capacity(&self) -> usize {
             self.internal.capacity()
@@ -204,8 +204,8 @@ macro_rules! shared_impl {
         ///
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
-        /// let receiver_clone=r.clone();
-        /// assert_eq!(r.receiver_count(),2);
+        /// let receiver_clone = r.clone();
+        /// assert_eq!(r.receiver_count(), 2);
         /// ```
         pub fn receiver_count(&self) -> usize {
             acquire_internal(&self.internal).recv_count as usize
@@ -216,8 +216,8 @@ macro_rules! shared_impl {
         ///
         /// ```
         /// let (s, r) = kanal::unbounded::<u64>();
-        /// let sender_clone=s.clone();
-        /// assert_eq!(r.sender_count(),2);
+        /// let sender_clone = s.clone();
+        /// assert_eq!(r.sender_count(), 2);
         /// ```
         pub fn sender_count(&self) -> usize {
             acquire_internal(&self.internal).send_count as usize
@@ -231,8 +231,8 @@ macro_rules! shared_impl {
         /// let (s, r) = kanal::unbounded::<u64>();
         /// // closes channel on both sides and has same effect as r.close();
         /// s.close().unwrap();
-        /// assert_eq!(r.is_closed(),true);
-        /// assert_eq!(s.is_closed(),true);
+        /// assert_eq!(r.is_closed(), true);
+        /// assert_eq!(s.is_closed(), true);
         /// ```
         pub fn close(&self) -> Result<(), CloseError> {
             let mut internal = acquire_internal(&self.internal);
@@ -254,8 +254,8 @@ macro_rules! shared_impl {
         /// let (s, r) = kanal::unbounded::<u64>();
         /// // closes channel on both sides and has same effect as r.close();
         /// s.close();
-        /// assert_eq!(r.is_closed(),true);
-        /// assert_eq!(s.is_closed(),true);
+        /// assert_eq!(r.is_closed(), true);
+        /// assert_eq!(s.is_closed(), true);
         /// ```
         pub fn is_closed(&self) -> bool {
             let internal = acquire_internal(&self.internal);
@@ -278,14 +278,12 @@ macro_rules! shared_send_impl {
         /// ```
         /// # use std::thread::spawn;
         /// let (s, r) = kanal::bounded(0);
-        /// let t=spawn( move || {
-        ///     loop{
-        ///         if s.try_send(1).is_ok() {
-        ///             break;
-        ///         }
+        /// let t = spawn(move || loop {
+        ///     if s.try_send(1).is_ok() {
+        ///         break;
         ///     }
         /// });
-        /// assert_eq!(r.recv()?,1);
+        /// assert_eq!(r.recv()?, 1);
         /// # t.join();
         /// # anyhow::Ok(())
         /// ```
@@ -319,19 +317,20 @@ macro_rules! shared_send_impl {
         /// ```
         /// # use std::thread::spawn;
         /// let (s, r) = kanal::bounded(0);
-        /// let t=spawn( move || {
-        ///     loop{
-        ///         if s.try_send_realtime(1).is_ok() {
-        ///             break;
-        ///         }
+        /// let t = spawn(move || loop {
+        ///     if s.try_send_realtime(1).is_ok() {
+        ///         break;
         ///     }
         /// });
-        /// assert_eq!(r.recv()?,1);
+        /// assert_eq!(r.recv()?, 1);
         /// # t.join();
         /// # anyhow::Ok(())
         /// ```
         #[inline(always)]
-        pub fn try_send_realtime(&self, data: T) -> Result<(), SendTimeoutError<T>> {
+        pub fn try_send_realtime(
+            &self,
+            data: T,
+        ) -> Result<(), SendTimeoutError<T>> {
             let cap = self.internal.capacity();
             if let Some(mut internal) = try_acquire_internal(&self.internal) {
                 check_recv_closed_timeout!(internal, data);
@@ -383,8 +382,8 @@ macro_rules! shared_recv_impl {
         /// #      anyhow::Ok(())
         /// # });
         /// loop {
-        ///     if let Some(name)=r.try_recv()?{
-        ///         println!("Hello {}!",name);
+        ///     if let Some(name) = r.try_recv()? {
+        ///         println!("Hello {}!", name);
         ///         break;
         ///     }
         /// }
@@ -401,9 +400,9 @@ macro_rules! shared_recv_impl {
             if cap > 0 {
                 if let Some(v) = internal.queue.pop_front() {
                     if let Some(p) = internal.next_send() {
-                        // if there is a sender take its data and push it into the
-                        // queue Safety: it's safe to receive from owned
-                        // signal once
+                        // if there is a sender take its data and push it into
+                        // the queue Safety: it's safe to
+                        // receive from owned signal once
                         unsafe { internal.queue.push_back(p.recv()) }
                     }
                     return Ok(Some(v));
@@ -436,8 +435,8 @@ macro_rules! shared_recv_impl {
         /// #      anyhow::Ok(())
         /// # });
         /// loop {
-        ///     if let Some(name)=r.try_recv_realtime()?{
-        ///         println!("Hello {}!",name);
+        ///     if let Some(name) = r.try_recv_realtime()? {
+        ///         println!("Hello {}!", name);
         ///         break;
         ///     }
         /// }
@@ -454,9 +453,10 @@ macro_rules! shared_recv_impl {
                 if cap > 0 {
                     if let Some(v) = internal.queue.pop_front() {
                         if let Some(p) = internal.next_send() {
-                            // if there is a sender take its data and push it into
-                            // the queue Safety: it's safe to
-                            // receive from owned signal once
+                            // if there is a sender take its data and push it
+                            // into the queue Safety: it's
+                            // safe to receive from owned
+                            // signal once
                             unsafe { internal.queue.push_back(p.recv()) }
                         }
                         return Ok(Some(v));
@@ -474,20 +474,22 @@ macro_rules! shared_recv_impl {
             Ok(None)
         }
 
-        /// Drains all available messages from the channel into the provided vector and
-        /// returns the number of received messages.
+        /// Drains all available messages from the channel into the provided
+        /// vector and returns the number of received messages.
         ///
-        /// The function is designed to be non-blocking, meaning it only processes
-        /// messages that are readily available and returns immediately with whatever
-        /// messages are present. It provides a count of received messages, which could
-        /// be zero if no messages are available at the time of the call.
+        /// The function is designed to be non-blocking, meaning it only
+        /// processes messages that are readily available and returns
+        /// immediately with whatever messages are present. It provides a count
+        /// of received messages, which could be zero if no messages are
+        /// available at the time of the call.
         ///
-        /// When using this function, it’s a good idea to check if the returned count is
-        /// zero to avoid busy-waiting in a loop. If blocking behavior is desired when
-        /// the count is zero, you can use the `recv()` function if count is zero. For
-        /// efficiency, reusing the same vector across multiple calls can help minimize
-        /// memory allocations. Between uses, you can clear the vector with
-        /// `vec.clear()` to prepare it for the next set of messages.
+        /// When using this function, it’s a good idea to check if the returned
+        /// count is zero to avoid busy-waiting in a loop. If blocking behavior
+        /// is desired when the count is zero, you can use the `recv()` function
+        /// if count is zero. For efficiency, reusing the same vector across
+        /// multiple calls can help minimize memory allocations. Between uses,
+        /// you can clear the vector with `vec.clear()` to prepare it for the
+        /// next set of messages.
         ///
         /// # Examples
         ///
@@ -505,17 +507,17 @@ macro_rules! shared_recv_impl {
         /// loop {
         ///     if let Ok(count) = r.drain_into(&mut buf) {
         ///         if count == 0 {
-        ///            // count is 0, to avoid busy-wait using recv for
-        ///            // the first next message
-        ///            if let Ok(v) = r.recv() {
-        ///               buf.push(v);
-        ///            } else {
-        ///              break;
-        ///            }
+        ///             // count is 0, to avoid busy-wait using recv for
+        ///             // the first next message
+        ///             if let Ok(v) = r.recv() {
+        ///                 buf.push(v);
+        ///             } else {
+        ///                 break;
+        ///             }
         ///         }
         ///         // use buffer
-        ///         buf.iter().for_each(|v| println!("{}",v));
-        ///     }else{
+        ///         buf.iter().for_each(|v| println!("{}", v));
+        ///     } else {
         ///         println!("Channel closed");
         ///         break;
         ///     }
@@ -524,7 +526,10 @@ macro_rules! shared_recv_impl {
         /// # t.join();
         /// # anyhow::Ok(())
         /// ```
-        pub fn drain_into(&self, vec: &mut Vec<T>) -> Result<usize, ReceiveError> {
+        pub fn drain_into(
+            &self,
+            vec: &mut Vec<T>,
+        ) -> Result<usize, ReceiveError> {
             let mut internal = acquire_internal(&self.internal);
             if unlikely(internal.recv_count == 0) {
                 return Err(ReceiveError());
@@ -536,9 +541,9 @@ macro_rules! shared_recv_impl {
                     internal.wait_list.len()
                 }
             };
-            // Reserve room for every element we are about to drain; Vec::reserve
-            // guarantees capacity for `len + required_cap` and is a no-op when the
-            // existing capacity is already sufficient.
+            // Reserve room for every element we are about to drain;
+            // Vec::reserve guarantees capacity for `len + required_cap` and
+            // is a no-op when the existing capacity is already sufficient.
             vec.reserve(required_cap);
             while let Some(v) = internal.queue.pop_front() {
                 vec.push(v);
@@ -595,7 +600,7 @@ impl<T> Sender<T> {
     /// # use std::thread::spawn;
     /// # let (s, r) = kanal::bounded(0);
     /// # spawn(move || {
-    ///  s.send("Hello").unwrap();
+    /// s.send("Hello").unwrap();
     /// #      anyhow::Ok(())
     /// # });
     /// # let name=r.recv()?;
@@ -665,7 +670,7 @@ impl<T> Sender<T> {
     /// // push as many items as the channel can accept.
     /// let handle = std::thread::spawn(move || {
     ///     /// // Prepare a deque with several values
-    ///      let mut buf = VecDeque::from(vec![1, 2, 3, 4, 5]);
+    ///     let mut buf = VecDeque::from(vec![1, 2, 3, 4, 5]);
     ///     // `send_many` consumes items from the front of the deque.
     ///     // It returns `Ok(())` when all possible items have been sent
     ///     // or `Err` if the channel is closed. Here we unwrap the result
@@ -697,7 +702,10 @@ impl<T> Sender<T> {
     /// transferred, or `Err(SendError<T>)` containing the first element that
     /// could not be sent (typically because the receiver side has been
     /// closed).
-    pub fn send_many(&self, elements: &mut VecDeque<T>) -> Result<(), SendError<T>> {
+    pub fn send_many(
+        &self,
+        elements: &mut VecDeque<T>,
+    ) -> Result<(), SendError<T>> {
         if unlikely(elements.is_empty()) {
             return Ok(());
         }
@@ -731,7 +739,8 @@ impl<T> Sender<T> {
             }
             let mut data = MaybeUninit::new(elements.pop_front().unwrap());
             // send directly to the waitlist
-            let sig = pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
+            let sig =
+                pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
             internal.recv_blocking = false;
             internal.push_signal(sig.dynamic_ptr());
             drop(internal);
@@ -757,7 +766,7 @@ impl<T> Sender<T> {
     /// # use std::time::Duration;
     /// # let (s, r) = kanal::bounded(0);
     /// # spawn(move || {
-    ///  s.send_timeout("Hello",Duration::from_millis(500)).unwrap();
+    /// s.send_timeout("Hello", Duration::from_millis(500)).unwrap();
     /// #      anyhow::Ok(())
     /// # });
     /// # let name=r.recv()?;
@@ -765,7 +774,11 @@ impl<T> Sender<T> {
     /// # anyhow::Ok(())
     /// ```
     #[inline(always)]
-    pub fn send_timeout(&self, data: T, duration: Duration) -> Result<(), SendTimeoutError<T>> {
+    pub fn send_timeout(
+        &self,
+        data: T,
+        duration: Duration,
+    ) -> Result<(), SendTimeoutError<T>> {
         let cap = self.internal.capacity();
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
@@ -795,20 +808,26 @@ impl<T> Sender<T> {
             if sig.is_terminated() {
                 // SAFETY: data failed to move, sender should drop it if it
                 // needs to
-                return Err(SendTimeoutError::Closed(unsafe { data.assume_init() }));
+                return Err(SendTimeoutError::Closed(unsafe {
+                    data.assume_init()
+                }));
             }
             {
                 let mut internal = acquire_internal(&self.internal);
                 if internal.cancel_send_signal(sig.as_tagged_ptr()) {
                     // SAFETY: data failed to move, we return it to the user
-                    return Err(SendTimeoutError::Timeout(unsafe { data.assume_init() }));
+                    return Err(SendTimeoutError::Timeout(unsafe {
+                        data.assume_init()
+                    }));
                 }
             }
             // removing receive failed to wait for the signal response
             if unlikely(!sig.wait()) {
                 // SAFETY: data failed to move, we return it to the user
 
-                return Err(SendTimeoutError::Closed(unsafe { data.assume_init() }));
+                return Err(SendTimeoutError::Closed(unsafe {
+                    data.assume_init()
+                }));
             }
         }
         Ok(())
@@ -832,13 +851,13 @@ impl<T> Sender<T> {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use tokio::{spawn as co};
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded(0);
-    ///   co(async move {
-    ///     let s=s.to_async();
+    /// let (s, r) = kanal::bounded(0);
+    /// co(async move {
+    ///     let s = s.to_async();
     ///     s.send("World").await;
-    ///   });
-    ///   let name=r.recv()?;
-    ///   println!("Hello {}!",name);
+    /// });
+    /// let name = r.recv()?;
+    /// println!("Hello {}!", name);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -855,12 +874,12 @@ impl<T> Sender<T> {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use tokio::{spawn as co};
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded(0);
-    ///   co(async move {
+    /// let (s, r) = kanal::bounded(0);
+    /// co(async move {
     ///     s.as_async().send("World").await;
-    ///   });
-    ///   let name=r.recv()?;
-    ///   println!("Hello {}!",name);
+    /// });
+    /// let name = r.recv()?;
+    /// println!("Hello {}!", name);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -882,7 +901,7 @@ impl<T> AsyncSender<T> {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let (s, r) = kanal::unbounded_async();
     /// s.send(1).await?;
-    /// assert_eq!(r.recv().await?,1);
+    /// assert_eq!(r.recv().await?, 1);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -930,7 +949,10 @@ impl<T> AsyncSender<T> {
     /// # });
     /// ```
     #[inline(always)]
-    pub fn send_many<'a, 'b>(&'a self, elements: &'b mut VecDeque<T>) -> SendManyFuture<'a, 'b, T> {
+    pub fn send_many<'a, 'b>(
+        &'a self,
+        elements: &'b mut VecDeque<T>,
+    ) -> SendManyFuture<'a, 'b, T> {
         SendManyFuture::new(&self.internal, elements)
     }
 
@@ -943,10 +965,10 @@ impl<T> AsyncSender<T> {
     /// ```
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let (s, r) = kanal::unbounded_async();
-    /// let sync_sender=s.clone_sync();
+    /// let sync_sender = s.clone_sync();
     /// // JUST FOR EXAMPLE IT IS WRONG TO USE SYNC INSTANCE IN ASYNC CONTEXT
     /// sync_sender.send(1)?;
-    /// assert_eq!(r.recv().await?,1);
+    /// assert_eq!(r.recv().await?, 1);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -963,15 +985,15 @@ impl<T> AsyncSender<T> {
     /// ```
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded_async(0);
-    ///   // move to sync environment
-    ///   std::thread::spawn(move || {
-    ///     let s=s.to_sync();
+    /// let (s, r) = kanal::bounded_async(0);
+    /// // move to sync environment
+    /// std::thread::spawn(move || {
+    ///     let s = s.to_sync();
     ///     s.send("World")?;
     ///     anyhow::Ok(())
-    ///   });
-    ///   let name=r.recv().await?;
-    ///   println!("Hello {}!",name);
+    /// });
+    /// let name = r.recv().await?;
+    /// println!("Hello {}!", name);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -987,14 +1009,14 @@ impl<T> AsyncSender<T> {
     /// ```
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded_async(0);
-    ///   // move to sync environment
-    ///   std::thread::spawn(move || {
+    /// let (s, r) = kanal::bounded_async(0);
+    /// // move to sync environment
+    /// std::thread::spawn(move || {
     ///     s.as_sync().send("World")?;
     ///     anyhow::Ok(())
-    ///   });
-    ///   let name=r.recv().await?;
-    ///   println!("Hello {}!",name);
+    /// });
+    /// let name = r.recv().await?;
+    /// println!("Hello {}!", name);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1039,7 +1061,7 @@ impl<T> fmt::Debug for Receiver<T> {
 ///
 /// ```
 /// let (_s, receiver) = kanal::bounded_async::<u64>(0);
-/// let sync_receiver=receiver.clone_sync();
+/// let sync_receiver = receiver.clone_sync();
 /// ```
 #[cfg(feature = "async")]
 #[repr(C)]
@@ -1066,8 +1088,9 @@ impl<T> Receiver<T> {
         if cap > 0 {
             if let Some(v) = internal.queue.pop_front() {
                 if let Some(p) = internal.next_send() {
-                    // if there is a sender take its data and push it into the queue
-                    // SAFETY: it's safe to receive from owned signal once
+                    // if there is a sender take its data and push it into the
+                    // queue SAFETY: it's safe to receive
+                    // from owned signal once
                     unsafe { internal.queue.push_back(p.recv()) }
                 }
                 return Ok(v);
@@ -1105,7 +1128,10 @@ impl<T> Receiver<T> {
     }
     /// Tries receiving from the channel within a duration
     #[inline(always)]
-    pub fn recv_timeout(&self, duration: Duration) -> Result<T, ReceiveErrorTimeout> {
+    pub fn recv_timeout(
+        &self,
+        duration: Duration,
+    ) -> Result<T, ReceiveErrorTimeout> {
         let cap = self.internal.capacity();
         let deadline = Instant::now().checked_add(duration).unwrap();
         let mut internal = acquire_internal(&self.internal);
@@ -1115,8 +1141,9 @@ impl<T> Receiver<T> {
         if cap > 0 {
             if let Some(v) = internal.queue.pop_front() {
                 if let Some(p) = internal.next_send() {
-                    // if there is a sender take its data and push it into the queue
-                    // SAFETY: it's safe to receive from owned signal once
+                    // if there is a sender take its data and push it into the
+                    // queue SAFETY: it's safe to receive
+                    // from owned signal once
                     unsafe { internal.queue.push_back(p.recv()) }
                 }
                 return Ok(v);
@@ -1183,14 +1210,14 @@ impl<T> Receiver<T> {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use tokio::{spawn as co};
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded(0);
-    ///   co(async move {
-    ///     let r=r.to_async();
-    ///     let name=r.recv().await?;
-    ///     println!("Hello {}!",name);
+    /// let (s, r) = kanal::bounded(0);
+    /// co(async move {
+    ///     let r = r.to_async();
+    ///     let name = r.recv().await?;
+    ///     println!("Hello {}!", name);
     ///     anyhow::Ok(())
-    ///   });
-    ///   s.send("World")?;
+    /// });
+    /// s.send("World")?;
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1208,13 +1235,13 @@ impl<T> Receiver<T> {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use tokio::{spawn as co};
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded(0);
-    ///   co(async move {
-    ///     let name=r.as_async().recv().await?;
-    ///     println!("Hello {}!",name);
+    /// let (s, r) = kanal::bounded(0);
+    /// co(async move {
+    ///     let name = r.as_async().recv().await?;
+    ///     println!("Hello {}!", name);
     ///     anyhow::Ok(())
-    ///   });
-    ///   s.send("World")?;
+    /// });
+    /// s.send("World")?;
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1272,8 +1299,8 @@ impl<T> AsyncReceiver<T> {
     /// #      s.send("Buddy").await?;
     /// #      anyhow::Ok(())
     /// # });
-    /// let name=r.recv().await?;
-    /// println!("Hello {}",name);
+    /// let name = r.recv().await?;
+    /// println!("Hello {}", name);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1325,9 +1352,9 @@ impl<T> AsyncReceiver<T> {
     /// # use tokio::{spawn as co};
     /// let (s, r) = kanal::unbounded_async();
     /// s.send(1).await?;
-    /// let sync_receiver=r.clone_sync();
+    /// let sync_receiver = r.clone_sync();
     /// // JUST FOR EXAMPLE IT IS WRONG TO USE SYNC INSTANCE IN ASYNC CONTEXT
-    /// assert_eq!(sync_receiver.recv()?,1);
+    /// assert_eq!(sync_receiver.recv()?, 1);
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1344,15 +1371,15 @@ impl<T> AsyncReceiver<T> {
     /// ```
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded_async(0);
-    ///   // move to sync environment
-    ///   std::thread::spawn(move || {
-    ///     let r=r.to_sync();
-    ///     let name=r.recv()?;
-    ///     println!("Hello {}!",name);
+    /// let (s, r) = kanal::bounded_async(0);
+    /// // move to sync environment
+    /// std::thread::spawn(move || {
+    ///     let r = r.to_sync();
+    ///     let name = r.recv()?;
+    ///     println!("Hello {}!", name);
     ///     anyhow::Ok(())
-    ///   });
-    ///   s.send("World").await?;
+    /// });
+    /// s.send("World").await?;
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1367,14 +1394,14 @@ impl<T> AsyncReceiver<T> {
     /// ```
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # use std::time::Duration;
-    ///   let (s, r) = kanal::bounded_async(0);
-    ///   // move to sync environment
-    ///   std::thread::spawn(move || {
-    ///     let name=r.as_sync().recv()?;
-    ///     println!("Hello {}!",name);
+    /// let (s, r) = kanal::bounded_async(0);
+    /// // move to sync environment
+    /// std::thread::spawn(move || {
+    ///     let name = r.as_sync().recv()?;
+    ///     println!("Hello {}!", name);
     ///     anyhow::Ok(())
-    ///   });
-    ///   s.send("World").await?;
+    /// });
+    /// s.send("World").await?;
     /// # anyhow::Ok(())
     /// # });
     /// ```
@@ -1465,13 +1492,13 @@ pub fn bounded<T>(size: usize) -> (Sender<T>, Receiver<T>) {
 ///
 /// ```
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// use tokio::{spawn as co};
+/// use tokio::spawn as co;
 ///
 /// let (s, r) = kanal::bounded_async(0);
 ///
 /// co(async move {
-///       s.send("hello!").await?;
-///       anyhow::Ok(())
+///     s.send("hello!").await?;
+///     anyhow::Ok(())
 /// });
 ///
 /// assert_eq!(r.recv().await?, "hello!");
@@ -1553,13 +1580,13 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 ///
 /// ```
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// use tokio::{spawn as co};
+/// use tokio::spawn as co;
 ///
 /// let (s, r) = kanal::unbounded_async();
 ///
 /// co(async move {
-///       s.send("hello!").await?;
-///       anyhow::Ok(())
+///     s.send("hello!").await?;
+///     anyhow::Ok(())
 /// });
 ///
 /// assert_eq!(r.recv().await?, "hello!");
