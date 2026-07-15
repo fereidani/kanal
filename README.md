@@ -9,7 +9,7 @@
 [crates-badge]: https://img.shields.io/crates/v/kanal.svg?style=for-the-badge
 [crates-url]: https://crates.io/crates/kanal
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge
-[mit-url]: https://github.com/fereidani/kanal/blob/master/LICENSE
+[mit-url]: https://github.com/fereidani/kanal/blob/main/LICENSE
 [doc-badge]: https://img.shields.io/docsrs/kanal?style=for-the-badge
 [doc-url]: https://docs.rs/kanal
 
