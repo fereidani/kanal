@@ -267,12 +267,13 @@ macro_rules! shared_impl {
 
 macro_rules! shared_send_impl {
     () => {
-        /// Tries sending to the channel without waiting on the waitlist, if
-        /// send fails then the object will be dropped. It returns `Ok(true)` in
-        /// case of a successful operation and `Ok(false)` for a failed one, or
-        /// error in case that channel is closed. Important note: this function
-        /// is not lock-free as it acquires a mutex guard of the channel
-        /// internal for a short time.
+        /// Tries sending to the channel without waiting on the waitlist. It
+        /// returns `Ok(())` in case of a successful operation and
+        /// `Err(SendTimeoutError::Timeout(data))` when the channel cannot
+        /// accept the data right now, giving the data back to the caller, or
+        /// `Err(SendTimeoutError::Closed(data))` in case that the channel is
+        /// closed. Important note: this function is not lock-free as it
+        /// acquires a mutex guard of the channel internal for a short time.
         ///
         /// # Examples
         ///
@@ -306,10 +307,12 @@ macro_rules! shared_send_impl {
             Err(SendTimeoutError::Timeout(data))
         }
 
-        /// Tries sending to the channel without waiting on the waitlist or for
-        /// the internal mutex, if send fails then the object will be dropped.
-        /// It returns `Ok(true)` in case of a successful operation and
-        /// `Ok(false)` for a failed one, or error in case that channel is
+        /// Tries sending to the channel without waiting on the waitlist or
+        /// for the internal mutex. It returns `Ok(())` in case of a
+        /// successful operation and `Err(SendTimeoutError::Timeout(data))`
+        /// when the channel cannot accept the data right now or its lock is
+        /// contended, giving the data back to the caller, or
+        /// `Err(SendTimeoutError::Closed(data))` in case that the channel is
         /// closed. Do not use this function unless you know exactly what you
         /// are doing.
         ///
@@ -669,9 +672,9 @@ impl<T> Sender<T> {
     /// * If the channel’s queue becomes full, mutex guard will be released and
     ///   remaining elements stay in the supplied `VecDeque` to be send in a
     ///   signal.
-    /// * Elements are taken from the front of the deque (FIFO order). When the
-    ///   internal queue has spare capacity, elements are moved from the back of
-    ///   the deque into the internal queue to fill it as quickly as possible.
+    /// * Elements are always taken from the front of the deque (FIFO order),
+    ///   whether they are delivered directly to waiting receivers or moved into
+    ///   the internal queue when it has spare capacity.
     ///
     /// # Examples
     ///
