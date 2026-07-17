@@ -65,6 +65,16 @@ impl<T> SendTimeoutError<T> {
             SendTimeoutError::Timeout(value) => value,
         }
     }
+    /// Returns true if the send failed because the channel is closed.
+    #[inline]
+    pub fn is_closed(&self) -> bool {
+        matches!(self, SendTimeoutError::Closed(_))
+    }
+    /// Returns true if the send failed because the operation timed out.
+    #[inline]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, SendTimeoutError::Timeout(_))
+    }
 }
 
 impl<T> std::error::Error for SendTimeoutError<T> {}
@@ -87,6 +97,18 @@ pub enum ReceiveErrorTimeout {
     Closed,
     /// Indicates that channel operation reached timeout and is canceled
     Timeout,
+}
+impl ReceiveErrorTimeout {
+    /// Returns true if the receive failed because the channel is closed.
+    #[inline]
+    pub fn is_closed(&self) -> bool {
+        matches!(self, ReceiveErrorTimeout::Closed)
+    }
+    /// Returns true if the receive failed because the operation timed out.
+    #[inline]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, ReceiveErrorTimeout::Timeout)
+    }
 }
 impl core::error::Error for ReceiveErrorTimeout {}
 impl fmt::Display for ReceiveErrorTimeout {
