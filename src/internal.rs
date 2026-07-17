@@ -228,6 +228,50 @@ impl<T> ChannelInternal<T> {
         }
     }
 
+    /// Removes up to `max` waiting receive signals from the waitlist and
+    /// returns them. The caller owns the returned signals and must complete
+    /// every one of them; completing them after releasing the channel lock
+    /// is safe because detached signals can no longer be canceled. Like
+    /// [`Self::next_recv`], an exhausted waitlist lazily flips over to the
+    /// send side.
+    #[inline(always)]
+    pub(crate) fn take_recvs(
+        &mut self,
+        max: usize,
+    ) -> VecDeque<DynamicSignal<T>> {
+        if !self.recv_blocking {
+            return VecDeque::new();
+        }
+        if self.wait_list.is_empty() {
+            self.recv_blocking = false;
+            return VecDeque::new();
+        }
+        if max >= self.wait_list.len() {
+            core::mem::take(&mut self.wait_list)
+        } else {
+            let tail = self.wait_list.split_off(max);
+            core::mem::replace(&mut self.wait_list, tail)
+        }
+    }
+
+    /// Removes all waiting send signals from the waitlist and returns them.
+    /// The caller owns the returned signals and must complete every one of
+    /// them; completing them after releasing the channel lock is safe
+    /// because detached signals can no longer be canceled. Like
+    /// [`Self::next_send`], an exhausted waitlist lazily flips over to the
+    /// receive side.
+    #[inline(always)]
+    pub(crate) fn take_sends(&mut self) -> VecDeque<DynamicSignal<T>> {
+        if self.recv_blocking {
+            return VecDeque::new();
+        }
+        if self.wait_list.is_empty() {
+            self.recv_blocking = true;
+            return VecDeque::new();
+        }
+        core::mem::take(&mut self.wait_list)
+    }
+
     /// Adds new sender/receiver signal to the waitlist
     #[inline(always)]
     pub(crate) fn push_signal(&mut self, s: DynamicSignal<T>) {

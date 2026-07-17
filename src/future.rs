@@ -7,7 +7,7 @@ use futures_core::{FusedStream, Future, Stream};
 
 use crate::{
     internal::{acquire_internal, Internal},
-    signal::AsyncSignal,
+    signal::{AsyncSignal, DeferredNotify},
     AsyncReceiver, ReceiveError, SendError,
 };
 
@@ -318,13 +318,21 @@ impl<T> Future for ReceiveFuture<'_, T> {
                     }
                     if cap > 0 {
                         if let Some(v) = internal.queue.pop_front() {
-                            if let Some(t) = internal.next_send() {
-                                // if there is a sender take its data and push
-                                // it into the queue
-                                unsafe { internal.queue.push_back(t.recv()) }
-                            }
+                            // if there is a sender take its data and push it
+                            // into the queue, deferring its wakeup to after
+                            // unlock
+                            let notify = match internal.next_send() {
+                                Some(t) => {
+                                    let (data, notify) =
+                                        unsafe { t.recv_deferred() };
+                                    internal.queue.push_back(data);
+                                    notify
+                                }
+                                None => DeferredNotify::None,
+                            };
                             drop(internal);
                             this.sig.set_state_relaxed(FutureState::Done);
+                            notify.notify();
                             return Poll::Ready(Ok(v));
                         }
                     }
@@ -564,27 +572,27 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             }
 
             // -----------------------------------------------------------------
-            // 1) Deliver directly to waiting receivers.
+            // 1) Deliver directly to waiting receivers, completing them after
+            //    releasing the lock so wake side effects never run inside the
+            //    critical section.
             // -----------------------------------------------------------------
-            while let Some(waiter) = internal.next_recv() {
-                let v = this.elements.pop_front().unwrap();
-                // SAFETY: it is safe to send an owned waiter once
-                unsafe {
-                    waiter.send(v);
+            let receivers = internal.take_recvs(this.elements.len());
+            if !receivers.is_empty() {
+                drop(internal);
+                for waiter in receivers {
+                    let v = this.elements.pop_front().unwrap();
+                    // SAFETY: it is safe to send an owned waiter once
+                    unsafe {
+                        waiter.send(v);
+                    }
                 }
                 if unlikely(this.elements.is_empty()) {
                     // No more elements to send.
-                    drop(internal);
                     this.finished = true;
                     return Poll::Ready(Ok(()));
                 }
-            }
-
-            if unlikely(this.elements.is_empty()) {
-                // Nothing left to send.
-                drop(internal);
-                this.finished = true;
-                return Poll::Ready(Ok(()));
+                // More elements remain; re-acquire the lock and continue.
+                continue;
             }
 
             // -----------------------------------------------------------------

@@ -1,12 +1,11 @@
 use core::{
     cell::UnsafeCell,
-    fmt::Debug,
     mem::ManuallyDrop,
     sync::atomic::{fence, AtomicUsize, Ordering},
     time::Duration,
 };
 #[cfg(feature = "async")]
-use core::{mem::MaybeUninit, task::Waker};
+use core::{fmt::Debug, mem::MaybeUninit, task::Waker};
 use std::{
     thread::{current as current_thread, Thread},
     time::Instant,
@@ -41,6 +40,31 @@ fn untag_pointer<T>(ptr: *const ()) -> (*const T, bool) {
     let is_tagged = (ptr.addr() & 1) == 1;
     let untagged = ptr.map_addr(|addr| addr & !1).cast::<T>();
     (untagged, is_tagged)
+}
+
+/// Deferred wakeup of a signal counterpart. Produced by the `*_deferred`
+/// signal operations while the channel lock is held; must be consumed with
+/// [`DeferredNotify::notify`] after the lock is released, otherwise a parked
+/// or suspended counterpart may never wake.
+#[must_use = "dropping this without calling notify may leave the counterpart parked forever"]
+pub(crate) enum DeferredNotify {
+    None,
+    Unpark(Thread),
+    #[cfg(feature = "async")]
+    Wake(Waker),
+}
+
+impl DeferredNotify {
+    /// Performs the deferred unpark/wake.
+    #[inline(always)]
+    pub(crate) fn notify(self) {
+        match self {
+            DeferredNotify::None => (),
+            DeferredNotify::Unpark(thread) => thread.unpark(),
+            #[cfg(feature = "async")]
+            DeferredNotify::Wake(waker) => waker.wake(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -102,10 +126,23 @@ impl<T> DynamicSignal<T> {
     }
     #[inline(always)]
     pub(crate) unsafe fn recv(self) -> T {
+        let (data, notify) = self.recv_deferred();
+        notify.notify();
+        data
+    }
+    /// Receives the data but defers the counterpart's unpark/wake to the
+    /// returned notifier, so callers holding the channel lock can release
+    /// it before notifying.
+    #[inline(always)]
+    pub(crate) unsafe fn recv_deferred(self) -> (T, DeferredNotify) {
         match self.resolve() {
-            PointerResult::Sync(ptr) => unsafe { SyncSignal::read_data(ptr) },
+            PointerResult::Sync(ptr) => unsafe {
+                SyncSignal::read_data_deferred(ptr)
+            },
             #[cfg(feature = "async")]
-            PointerResult::Async(ptr) => unsafe { AsyncSignal::read_data(ptr) },
+            PointerResult::Async(ptr) => unsafe {
+                AsyncSignal::read_data_deferred(ptr)
+            },
         }
     }
     #[inline(always)]
@@ -171,15 +208,18 @@ impl<T> SyncSignal<T> {
         }
     }
     #[inline(always)]
-    pub(crate) unsafe fn read_data(this: *const Self) -> T {
+    pub(crate) unsafe fn read_data_deferred(
+        this: *const Self,
+    ) -> (T, DeferredNotify) {
         let thread = ManuallyDrop::take(&mut *(*this).thread.get());
         let r = (*this).ptr.read();
         if unlikely(
             (*this).state.swap(UNLOCKED, Ordering::AcqRel) == LOCKED_STARVATION,
         ) {
-            thread.unpark();
+            (r, DeferredNotify::Unpark(thread))
+        } else {
+            (r, DeferredNotify::None)
         }
-        r
     }
     pub(crate) fn is_terminated(&self) -> bool {
         self.state.load(Ordering::Acquire) == TERMINATED
@@ -446,12 +486,13 @@ impl<T> AsyncSignal<T> {
         waker.wake();
     }
     #[inline(always)]
-    pub(crate) unsafe fn read_data(this: *const Self) -> T {
+    pub(crate) unsafe fn read_data_deferred(
+        this: *const Self,
+    ) -> (T, DeferredNotify) {
         let waker = (*this).clone_waker();
         let data = (*this).data.get().read().assume_init();
         (*this).state.store(UNLOCKED, Ordering::Release);
-        waker.wake();
-        data
+        (data, DeferredNotify::Wake(waker))
     }
 
     // Drops waker without waking

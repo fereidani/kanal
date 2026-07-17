@@ -400,12 +400,19 @@ macro_rules! shared_recv_impl {
             }
             if cap > 0 {
                 if let Some(v) = internal.queue.pop_front() {
-                    if let Some(p) = internal.next_send() {
-                        // if there is a sender take its data and push it into
-                        // the queue Safety: it's safe to
-                        // receive from owned signal once
-                        unsafe { internal.queue.push_back(p.recv()) }
-                    }
+                    // if there is a sender take its data and push it into
+                    // the queue, deferring its wakeup to after unlock
+                    let notify = match internal.next_send() {
+                        // SAFETY: it's safe to receive from owned signal once
+                        Some(p) => {
+                            let (data, notify) = unsafe { p.recv_deferred() };
+                            internal.queue.push_back(data);
+                            notify
+                        }
+                        None => DeferredNotify::None,
+                    };
+                    drop(internal);
+                    notify.notify();
                     return Ok(Some(v));
                 }
             }
@@ -453,13 +460,22 @@ macro_rules! shared_recv_impl {
                 }
                 if cap > 0 {
                     if let Some(v) = internal.queue.pop_front() {
-                        if let Some(p) = internal.next_send() {
-                            // if there is a sender take its data and push it
-                            // into the queue Safety: it's
-                            // safe to receive from owned
-                            // signal once
-                            unsafe { internal.queue.push_back(p.recv()) }
-                        }
+                        // if there is a sender take its data and push it
+                        // into the queue, deferring its wakeup to after
+                        // unlock
+                        let notify = match internal.next_send() {
+                            // SAFETY: it's safe to receive from owned signal
+                            // once
+                            Some(p) => {
+                                let (data, notify) =
+                                    unsafe { p.recv_deferred() };
+                                internal.queue.push_back(data);
+                                notify
+                            }
+                            None => DeferredNotify::None,
+                        };
+                        drop(internal);
+                        notify.notify();
                         return Ok(Some(v));
                     }
                 }
@@ -535,21 +551,18 @@ macro_rules! shared_recv_impl {
             if unlikely(internal.recv_count == 0) {
                 return Err(ReceiveError());
             }
-            let required_cap = internal.queue.len() + {
-                if internal.recv_blocking {
-                    0
-                } else {
-                    internal.wait_list.len()
-                }
-            };
+            // Take the waiting senders and complete them after releasing
+            // the lock, so unpark/wake side effects never run inside the
+            // critical section.
+            let senders = internal.take_sends();
+            let required_cap = internal.queue.len() + senders.len();
             // Reserve room for every element we are about to drain;
             // Vec::reserve guarantees capacity for `len + required_cap` and
             // is a no-op when the existing capacity is already sufficient.
             vec.reserve(required_cap);
-            while let Some(v) = internal.queue.pop_front() {
-                vec.push(v);
-            }
-            while let Some(p) = internal.next_send() {
+            vec.extend(internal.queue.drain(..));
+            drop(internal);
+            for p in senders {
                 // SAFETY: it's safe to receive from owned signal once
                 unsafe { vec.push(p.recv()) }
             }
@@ -717,14 +730,22 @@ impl<T> Sender<T> {
                 drop(internal);
                 return Err(SendError(elements.pop_front().unwrap()));
             }
-            while let Some(first) = internal.next_recv() {
-                // SAFETY: it's safe to send to owned signal once
-                unsafe {
-                    first.send(elements.pop_front().unwrap());
+            // Take the receivers this batch can serve and complete them
+            // after releasing the lock, so unpark/wake side effects never
+            // run inside the critical section.
+            let receivers = internal.take_recvs(elements.len());
+            if !receivers.is_empty() {
+                drop(internal);
+                for first in receivers {
+                    // SAFETY: it's safe to send to owned signal once
+                    unsafe {
+                        first.send(elements.pop_front().unwrap());
+                    }
                 }
                 if unlikely(elements.is_empty()) {
                     return Ok(());
                 }
+                continue;
             }
             if cap > 0 {
                 while internal.queue.len() < cap {
@@ -1094,12 +1115,19 @@ impl<T> Receiver<T> {
         }
         if cap > 0 {
             if let Some(v) = internal.queue.pop_front() {
-                if let Some(p) = internal.next_send() {
-                    // if there is a sender take its data and push it into the
-                    // queue SAFETY: it's safe to receive
-                    // from owned signal once
-                    unsafe { internal.queue.push_back(p.recv()) }
-                }
+                // if there is a sender take its data and push it into the
+                // queue, deferring its wakeup to after unlock
+                let notify = match internal.next_send() {
+                    // SAFETY: it's safe to receive from owned signal once
+                    Some(p) => {
+                        let (data, notify) = unsafe { p.recv_deferred() };
+                        internal.queue.push_back(data);
+                        notify
+                    }
+                    None => DeferredNotify::None,
+                };
+                drop(internal);
+                notify.notify();
                 return Ok(v);
             }
         }
@@ -1151,12 +1179,19 @@ impl<T> Receiver<T> {
         }
         if cap > 0 {
             if let Some(v) = internal.queue.pop_front() {
-                if let Some(p) = internal.next_send() {
-                    // if there is a sender take its data and push it into the
-                    // queue SAFETY: it's safe to receive
-                    // from owned signal once
-                    unsafe { internal.queue.push_back(p.recv()) }
-                }
+                // if there is a sender take its data and push it into the
+                // queue, deferring its wakeup to after unlock
+                let notify = match internal.next_send() {
+                    // SAFETY: it's safe to receive from owned signal once
+                    Some(p) => {
+                        let (data, notify) = unsafe { p.recv_deferred() };
+                        internal.queue.push_back(data);
+                        notify
+                    }
+                    None => DeferredNotify::None,
+                };
+                drop(internal);
+                notify.notify();
                 return Ok(v);
             }
         }
