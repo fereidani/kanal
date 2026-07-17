@@ -26,7 +26,10 @@ impl<T> Debug for Internal<T> {
 
 // Mutex is sync and send, so we can send it across threads
 unsafe impl<T: Send> Send for Internal<T> {}
-unsafe impl<T> Sync for Internal<T> {}
+// T: Send is required: a shared &Sender/&Receiver moves T values across
+// threads, so an unbounded Sync impl would let !Send types (e.g. Rc) cross
+// thread boundaries through safe code.
+unsafe impl<T: Send> Sync for Internal<T> {}
 
 impl<T> Internal<T> {
     #[inline(always)]
