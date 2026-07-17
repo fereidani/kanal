@@ -780,7 +780,13 @@ impl<T> Sender<T> {
         duration: Duration,
     ) -> Result<(), SendTimeoutError<T>> {
         let cap = self.internal.capacity();
-        let deadline = Instant::now().checked_add(duration).unwrap();
+        let Some(deadline) = Instant::now().checked_add(duration) else {
+            // Deadline exceeds the representable Instant range: the timeout
+            // can never fire, so wait without one.
+            return self
+                .send(data)
+                .map_err(|SendError(data)| SendTimeoutError::Closed(data));
+        };
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
             // Avoid wasting lock time on dropping failed send object
@@ -1133,7 +1139,11 @@ impl<T> Receiver<T> {
         duration: Duration,
     ) -> Result<T, ReceiveErrorTimeout> {
         let cap = self.internal.capacity();
-        let deadline = Instant::now().checked_add(duration).unwrap();
+        let Some(deadline) = Instant::now().checked_add(duration) else {
+            // Deadline exceeds the representable Instant range: the timeout
+            // can never fire, so wait without one.
+            return self.recv().map_err(|_| ReceiveErrorTimeout::Closed);
+        };
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
             return Err(ReceiveErrorTimeout::Closed);
