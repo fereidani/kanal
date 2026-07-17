@@ -267,7 +267,10 @@ impl<T> Drop for ReceiveFuture<'_, T> {
                         );
                         self.sig.drop_data();
                     } else {
-                        // fallback: push it back to the channel queue
+                        // fallback: push it back to the front of the channel
+                        // queue to avoid losing it; this may transiently
+                        // exceed the channel capacity by one element, which
+                        // is preferable to dropping delivered data
                         acquire_internal(self.internal)
                             .queue
                             .push_front(self.sig.assume_init())

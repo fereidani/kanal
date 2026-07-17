@@ -1324,6 +1324,14 @@ impl<T> AsyncReceiver<T> {
     /// Rust does not provide a built-in, correct mechanism for cancelling
     /// futures.
     ///
+    /// On channels with a non-zero capacity, a value caught in this window is
+    /// pushed back to the front of the channel queue instead of being lost.
+    /// Because this happens after the delivery, the queue may momentarily
+    /// hold one element more than `capacity()`, so `len()` can transiently
+    /// exceed the capacity until the extra element is consumed. Only
+    /// zero-capacity (rendezvous) channels can still lose the value in this
+    /// window.
+    ///
     /// Additionally, it is important to note that constructs such as
     /// `tokio::select!` are not correct to use with kanal async channels.
     /// Kanal's design does not rely on the conventional `poll` mechanism to
