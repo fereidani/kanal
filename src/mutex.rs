@@ -11,7 +11,10 @@ pub struct RawMutexLock {
 impl RawMutexLock {
     #[inline(never)]
     fn lock_no_inline(&self) {
-        spin_cond(|| self.try_lock());
+        // Test-and-test-and-set: spin on a plain load and only attempt the
+        // CAS when the lock is observed free, so waiters do not bounce the
+        // cache line between cores while the lock is held.
+        spin_cond(|| !self.locked.load(Ordering::Relaxed) && self.try_lock());
     }
 }
 
