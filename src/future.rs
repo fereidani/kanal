@@ -620,6 +620,13 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
                 // we are not registered in the queue yet.
                 unsafe {
                     this.fut.get_mut().sig.reset_send(v);
+                    // Register the waker before sharing the signal, so the
+                    // wakeup cannot be lost and the poll of the inner future
+                    // below does not have to re-lock the channel to fix a
+                    // stale waker up.
+                    if !this.fut.get_mut().sig.will_wake(cx.waker()) {
+                        this.fut.get_mut().sig.update_waker(cx.waker());
+                    }
                 }
                 // take_recvs already flipped the waitlist over to the send
                 // side, pushing a send signal while recv_blocking is set
