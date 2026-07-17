@@ -310,9 +310,13 @@ impl<T> SyncSignal<T> {
     }
 }
 
+// Unlike SyncSignal, the state is deliberately not cache-line padded: the
+// signal is embedded in every Send/Receive future, where padding would grow
+// and over-align each containing future and task allocation, while both
+// sides touch state, data and waker within a single handoff anyway.
 #[cfg(feature = "async")]
 pub(crate) struct AsyncSignal<T> {
-    state: CacheGuard<AtomicUsize>,
+    state: AtomicUsize,
     data: UnsafeCell<MaybeUninit<T>>,
     waker: UnsafeCell<Waker>,
     _pinned: core::marker::PhantomPinned,
@@ -354,9 +358,9 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub(crate) const fn new_recv() -> Self {
         Self {
-            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(
+            state: AtomicUsize::new(Self::state_to_usize(
                 FutureState::Unregistered,
-            ))),
+            )),
             data: UnsafeCell::new(MaybeUninit::uninit()),
             waker: UnsafeCell::new(no_op_waker()),
             _pinned: core::marker::PhantomPinned,
@@ -366,9 +370,9 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub(crate) const fn new_send(data: T) -> Self {
         Self {
-            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(
+            state: AtomicUsize::new(Self::state_to_usize(
                 FutureState::Unregistered,
-            ))),
+            )),
             data: UnsafeCell::new(MaybeUninit::new(data)),
             waker: UnsafeCell::new(no_op_waker()),
             _pinned: core::marker::PhantomPinned,
@@ -388,9 +392,7 @@ impl<T> AsyncSignal<T> {
     #[inline(always)]
     pub(crate) const fn new_send_finished() -> Self {
         Self {
-            state: CacheGuard::new(AtomicUsize::new(Self::state_to_usize(
-                FutureState::Success,
-            ))),
+            state: AtomicUsize::new(Self::state_to_usize(FutureState::Success)),
             data: UnsafeCell::new(MaybeUninit::uninit()),
             waker: UnsafeCell::new(no_op_waker()),
             _pinned: core::marker::PhantomPinned,
