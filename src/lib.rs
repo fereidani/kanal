@@ -782,9 +782,8 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Sends data to the channel with a deadline, if send fails then the object
-    /// will be dropped. you can use send_option_timeout if you like to keep
-    /// the object in case of timeout.
+    /// Sends data to the channel with a timeout. On failure the data is
+    /// given back to the caller inside the returned [`SendTimeoutError`].
     ///
     /// # Examples
     ///
@@ -806,7 +805,6 @@ impl<T> Sender<T> {
         data: T,
         duration: Duration,
     ) -> Result<(), SendTimeoutError<T>> {
-        let cap = self.internal.capacity();
         let Some(deadline) = Instant::now().checked_add(duration) else {
             // Deadline exceeds the representable Instant range: the timeout
             // can never fire, so wait without one.
@@ -814,6 +812,37 @@ impl<T> Sender<T> {
                 .send(data)
                 .map_err(|SendError(data)| SendTimeoutError::Closed(data));
         };
+        self.send_deadline(data, deadline)
+    }
+
+    /// Sends data to the channel, waiting until the given deadline at most.
+    /// Like [`Sender::send_timeout`] but takes an absolute [`Instant`]
+    /// instead of a relative duration, which is useful when a single
+    /// deadline spans multiple operations. On failure the data is given
+    /// back to the caller inside the returned [`SendTimeoutError`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # use std::time::{Duration, Instant};
+    /// # let (s, r) = kanal::bounded(0);
+    /// # spawn(move || {
+    /// let deadline = Instant::now() + Duration::from_millis(500);
+    /// s.send_deadline("Hello", deadline).unwrap();
+    /// #      anyhow::Ok(())
+    /// # });
+    /// # let name=r.recv()?;
+    /// # println!("Hello {}!",name);
+    /// # anyhow::Ok(())
+    /// ```
+    #[inline(always)]
+    pub fn send_deadline(
+        &self,
+        data: T,
+        deadline: Instant,
+    ) -> Result<(), SendTimeoutError<T>> {
+        let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
             // Avoid wasting lock time on dropping failed send object
@@ -1172,12 +1201,41 @@ impl<T> Receiver<T> {
         &self,
         duration: Duration,
     ) -> Result<T, ReceiveErrorTimeout> {
-        let cap = self.internal.capacity();
         let Some(deadline) = Instant::now().checked_add(duration) else {
             // Deadline exceeds the representable Instant range: the timeout
             // can never fire, so wait without one.
             return self.recv().map_err(|_| ReceiveErrorTimeout::Closed);
         };
+        self.recv_deadline(deadline)
+    }
+
+    /// Tries receiving from the channel, waiting until the given deadline at
+    /// most. Like [`Receiver::recv_timeout`] but takes an absolute
+    /// [`Instant`] instead of a relative duration, which is useful when a
+    /// single deadline spans multiple operations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// # use std::time::{Duration, Instant};
+    /// # let (s, r) = kanal::bounded(0);
+    /// # let t = spawn(move || {
+    /// #     s.send("Hello")?;
+    /// #     anyhow::Ok(())
+    /// # });
+    /// let deadline = Instant::now() + Duration::from_millis(500);
+    /// let name = r.recv_deadline(deadline)?;
+    /// # println!("Hello {}!", name);
+    /// # t.join();
+    /// # anyhow::Ok(())
+    /// ```
+    #[inline(always)]
+    pub fn recv_deadline(
+        &self,
+        deadline: Instant,
+    ) -> Result<T, ReceiveErrorTimeout> {
+        let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0) {
             return Err(ReceiveErrorTimeout::Closed);
