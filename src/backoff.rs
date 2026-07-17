@@ -7,7 +7,7 @@
 /// solutions.
 use core::{
     num::NonZeroUsize,
-    sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
     time::Duration,
 };
 use std::thread;
@@ -75,26 +75,6 @@ fn random_u7() -> u8 {
     seed.wrapping_mul(MULTIPLIER) & 0x7F
 }
 
-/// Generates a pseudo-random u32 number using an atomic fetch-and-add operation
-/// and a LCG-like algorithm. This function is implemented using the same
-/// algorithm as random_u8().
-#[allow(dead_code)]
-#[inline(always)]
-fn random_u32() -> u32 {
-    static SEED: AtomicU32 = AtomicU32::new(13);
-    const MULTIPLIER: u32 = 1812433253;
-    let seed = SEED.fetch_add(1, Ordering::Relaxed);
-    seed.wrapping_mul(MULTIPLIER)
-}
-
-/// Randomizes the input by up to 25%.
-/// This function is used to introduce some randomness into backoff strategies.
-#[allow(dead_code)]
-#[inline(always)]
-pub fn randomize(d: usize) -> usize {
-    d - (d >> 3) + random_u32() as usize % (d >> 2)
-}
-
 /// Retrieves the available degree of parallelism.
 /// If the degree of parallelism has not been computed yet, it computes and
 /// stores it in the PARALLELISM atomic variable. The degree of parallelism
@@ -123,8 +103,7 @@ pub fn get_parallelism() -> usize {
 /// reduce busy waiting and improve the efficiency of concurrent systems.
 ///
 /// The function starts with a short spinning phase, followed by a longer
-/// spinning and yielding phase, then a longer spinning and yielding phase with
-/// the operating system's yield function, and finally a phase with zero-length
+/// spinning and yielding phase, and finally a phase with zero-length
 /// sleeping and yielding.
 ///
 /// The function uses a geometric backoff strategy to increase the spin time
@@ -137,7 +116,6 @@ pub fn get_parallelism() -> usize {
 /// The function takes a closure that returns a boolean value indicating whether
 /// the condition has been met. The function returns when the condition is true.
 #[allow(dead_code)]
-#[allow(clippy::reversed_empty_ranges)]
 #[inline(always)]
 pub fn spin_cond<F: Fn() -> bool>(cond: F) {
     if get_parallelism() == 1 {
@@ -155,7 +133,6 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
 
     const NO_YIELD: usize = 1;
     const SPIN_YIELD: usize = 1;
-    const OS_YIELD: usize = 0;
     const ZERO_SLEEP: usize = 2;
     const SPINS: u32 = 8;
     let mut spins: u32 = SPINS;
@@ -182,17 +159,6 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             }
         }
 
-        // Longer spinning and yielding phase with OS yield
-        for _ in 0..OS_YIELD {
-            yield_os();
-
-            for _ in 0..spins {
-                if likely(cond()) {
-                    return;
-                }
-            }
-        }
-
         // Phase with zero-length sleeping and yielding
         for _ in 0..ZERO_SLEEP {
             sleep(Duration::from_nanos(0));
@@ -210,47 +176,5 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
         }
         // Backoff about 1ms
         sleep(Duration::from_nanos(1 << 20));
-    }
-}
-
-macro_rules! return_if_some {
-    ($result:expr) => {{
-        let result = $result;
-        if likely(result.is_some()) {
-            return result;
-        }
-    }};
-}
-
-/// Computes a future timeout instant by adding a specified number of
-/// microseconds to the current time.
-///
-/// # Parameters
-/// - `spin_micros`: The number of microseconds to add to the current time.
-///
-/// # Returns
-/// A [`std::time::Instant`] indicating when the timeout will occur.
-///
-/// # Panics
-/// This function will panic if the addition of the duration results in an
-/// overflow.
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn spin_option_yield_only<T>(
-    predicate: impl Fn() -> Option<T>,
-    spin_micros: u64,
-) -> Option<T> {
-    // exit early if predicate is already satisfied
-    return_if_some!(predicate());
-    let timeout = std::time::Instant::now()
-        .checked_add(Duration::from_micros(spin_micros))?;
-    loop {
-        for _ in 0..32 {
-            yield_os();
-            return_if_some!(predicate());
-        }
-        if std::time::Instant::now() >= timeout {
-            return None;
-        }
     }
 }
