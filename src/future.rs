@@ -621,6 +621,10 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
                 unsafe {
                     this.fut.get_mut().sig.reset_send(v);
                 }
+                // take_recvs already flipped the waitlist over to the send
+                // side, pushing a send signal while recv_blocking is set
+                // would corrupt the waitlist
+                debug_assert!(!internal.recv_blocking);
                 // This is pinned therefore this.fut is also pinned.
                 internal.push_signal(this.fut.get_mut().sig.dynamic_ptr());
 

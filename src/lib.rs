@@ -760,10 +760,12 @@ impl<T> Sender<T> {
                 }
             }
             let mut data = MaybeUninit::new(elements.pop_front().unwrap());
-            // send directly to the waitlist
+            // send directly to the waitlist; take_recvs already flipped the
+            // waitlist over to the send side, pushing a send signal while
+            // recv_blocking is set would corrupt the waitlist
+            debug_assert!(!internal.recv_blocking);
             let sig =
                 pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
-            internal.recv_blocking = false;
             internal.push_signal(sig.dynamic_ptr());
             drop(internal);
             if unlikely(!sig.wait()) {
