@@ -278,6 +278,7 @@ pub(crate) struct AsyncSignal<T> {
     _pinned: core::marker::PhantomPinned,
 }
 
+#[cfg(feature = "async")]
 impl<T> Debug for AsyncSignal<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         f.debug_struct("AsyncSignal")
