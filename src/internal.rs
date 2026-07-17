@@ -83,8 +83,12 @@ impl<T> Internal<T> {
     #[inline(always)]
     pub(crate) fn drop_recv(&mut self) {
         let mut internal = acquire_internal(self);
-        if unlikely(internal.dec_ref_count(false)) {
-            drop(internal);
+        let (is_last, cleanup) = internal.dec_ref_count(false);
+        drop(internal);
+        if let Some(cleanup) = cleanup {
+            cleanup.run();
+        }
+        if unlikely(is_last) {
             unsafe { self.drop() }
         }
     }
@@ -101,8 +105,12 @@ impl<T> Internal<T> {
     #[inline(always)]
     pub(crate) fn drop_send(&mut self) {
         let mut internal = acquire_internal(self);
-        if unlikely(internal.dec_ref_count(true)) {
-            drop(internal);
+        let (is_last, cleanup) = internal.dec_ref_count(true);
+        drop(internal);
+        if let Some(cleanup) = cleanup {
+            cleanup.run();
+        }
+        if unlikely(is_last) {
             unsafe { self.drop() }
         }
     }
@@ -166,16 +174,43 @@ pub(crate) struct ChannelInternal<T> {
     pub(crate) ref_count: usize,
 }
 
-impl<T> ChannelInternal<T> {
-    /// Terminates remainings signals in the queue to notify listeners about the
-    /// closing of the channel
-    #[cold]
-    pub(crate) fn terminate_signals(&mut self) {
+/// Termination work detached from the channel while its lock was held; the
+/// caller must `run` it after releasing the lock so that unpark/wake side
+/// effects and drops of queued user data never execute inside the critical
+/// section.
+pub(crate) struct Cleanup<T> {
+    wait_list: VecDeque<DynamicSignal<T>>,
+    queue: VecDeque<T>,
+}
+
+impl<T> Cleanup<T> {
+    /// Terminates the detached signals and drops the detached queue. Must be
+    /// called without holding the channel lock.
+    pub(crate) fn run(self) {
         for t in self.wait_list.iter() {
-            // SAFETY: it's safe to terminate owned signal once
+            // SAFETY: the signals were detached from the waitlist under the
+            // lock, their owners can no longer cancel them, and this side
+            // terminates each of them exactly once.
             unsafe { t.terminate() }
         }
-        self.wait_list.clear();
+        drop(self.queue);
+    }
+}
+
+impl<T> ChannelInternal<T> {
+    /// Detaches all waiting signals and optionally the queued data for
+    /// termination, so the caller can terminate/drop them after releasing
+    /// the channel lock.
+    #[cold]
+    pub(crate) fn detach_cleanup(&mut self, take_queue: bool) -> Cleanup<T> {
+        Cleanup {
+            wait_list: core::mem::take(&mut self.wait_list),
+            queue: if take_queue {
+                core::mem::take(&mut self.queue)
+            } else {
+                VecDeque::new()
+            },
+        }
     }
 
     /// Returns next signal for sender from the waitlist
@@ -295,24 +330,29 @@ impl<T> ChannelInternal<T> {
         self.ref_count += 1;
     }
 
-    /// Decreases ref count for sender or receiver
+    /// Decreases ref count for sender or receiver, returning whether this
+    /// was the last instance of the channel alongside any cleanup that must
+    /// run after the channel lock is released.
     #[inline(always)]
-    pub(crate) fn dec_ref_count(&mut self, is_sender: bool) -> bool {
+    pub(crate) fn dec_ref_count(
+        &mut self,
+        is_sender: bool,
+    ) -> (bool, Option<Cleanup<T>>) {
+        let mut cleanup = None;
         if is_sender {
             if self.send_count > 0 {
                 self.send_count -= 1;
                 if self.send_count == 0 && self.recv_count != 0 {
-                    self.terminate_signals();
+                    cleanup = Some(self.detach_cleanup(false));
                 }
             }
         } else if self.recv_count > 0 {
             self.recv_count -= 1;
             if self.recv_count == 0 {
-                self.terminate_signals();
-                self.queue.clear();
+                cleanup = Some(self.detach_cleanup(true));
             }
         }
         self.ref_count -= 1;
-        self.ref_count == 0
+        (self.ref_count == 0, cleanup)
     }
 }

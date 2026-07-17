@@ -241,8 +241,9 @@ macro_rules! shared_impl {
             }
             internal.recv_count = 0;
             internal.send_count = 0;
-            internal.terminate_signals();
-            internal.queue.clear();
+            let cleanup = internal.detach_cleanup(true);
+            drop(internal);
+            cleanup.run();
             Ok(())
         }
         /// Returns whether the channel is closed on both side of send and
