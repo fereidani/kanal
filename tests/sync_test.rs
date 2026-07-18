@@ -346,6 +346,71 @@ fn drain_into_test_zero_sized() {
 }
 
 #[test]
+fn drain_into_blocking_returns_available_immediately() {
+    const TEST_LENGTH: usize = 1000;
+    let (tx, rx) = new(Some(TEST_LENGTH));
+    for i in 0..TEST_LENGTH {
+        tx.send(Box::new(i)).unwrap();
+    }
+    let mut vec = Vec::new();
+    assert_eq!(rx.drain_into_blocking(&mut vec).unwrap(), TEST_LENGTH);
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(**v, i);
+    }
+}
+
+#[test]
+fn drain_into_blocking_waits_for_first_message() {
+    const TEST_LENGTH: usize = 100;
+    let (tx, rx) = new(Some(4));
+    let t = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        for i in 0..TEST_LENGTH {
+            tx.send(Box::new(i)).unwrap();
+        }
+    });
+    let mut vec = Vec::new();
+    while vec.len() < TEST_LENGTH {
+        assert!(rx.drain_into_blocking(&mut vec).unwrap() >= 1);
+    }
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(**v, i);
+    }
+    t.join().unwrap();
+}
+
+#[test]
+fn drain_into_blocking_rendezvous() {
+    const TEST_LENGTH: usize = 100;
+    let (tx, rx) = new(Some(0));
+    let t = thread::spawn(move || {
+        for i in 0..TEST_LENGTH {
+            tx.send(Box::new(i)).unwrap();
+        }
+    });
+    let mut vec = Vec::new();
+    while vec.len() < TEST_LENGTH {
+        assert!(rx.drain_into_blocking(&mut vec).unwrap() >= 1);
+    }
+    for (i, v) in vec.iter().enumerate() {
+        assert_eq!(**v, i);
+    }
+    t.join().unwrap();
+}
+
+#[test]
+fn drain_into_blocking_terminated_errors() {
+    let (tx, rx) = new(Some(2));
+    tx.send(Box::new(0)).unwrap();
+    drop(tx);
+    let mut vec = Vec::new();
+    // queued data is still drained after the sender is gone
+    assert_eq!(rx.drain_into_blocking(&mut vec).unwrap(), 1);
+    // now the channel is terminated
+    assert!(rx.drain_into_blocking(&mut vec).is_err());
+}
+
+#[test]
 fn recv_from_half_closed_channel() {
     let (tx, rx) = new::<u64>(Some(1));
     drop(tx);

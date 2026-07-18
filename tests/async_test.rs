@@ -667,4 +667,81 @@ mod asyncs {
 
         producer.join().expect("producer thread panicked");
     }
+
+    // drain_into_blocking on the async receiver returns a DrainIntoFuture:
+    // it must never block the runtime thread, resolve with everything
+    // available in one batch, and otherwise wait for the first delivery.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_into_blocking_batches_messages() {
+        const COUNT: usize = if cfg!(miri) { 64 } else { 10_000 };
+        let (s, r) = new::<usize>(Some(16));
+
+        let producer = tokio::spawn(async move {
+            for i in 0..COUNT {
+                s.send(i).await.unwrap();
+            }
+        });
+
+        let mut buf = Vec::new();
+        while buf.len() < COUNT {
+            assert!(r.drain_into_blocking(&mut buf).await.unwrap() >= 1);
+        }
+        assert_eq!(buf.len(), COUNT);
+        for (i, v) in buf.iter().enumerate() {
+            assert_eq!(*v, i);
+        }
+        producer.await.unwrap();
+    }
+
+    // On a rendezvous channel every message goes through the
+    // registered-signal path of DrainIntoFuture plus its opportunistic
+    // second batch pass.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_into_blocking_rendezvous() {
+        const COUNT: usize = if cfg!(miri) { 64 } else { 1_000 };
+        let (s, r) = new::<usize>(Some(0));
+
+        let producer = tokio::spawn(async move {
+            for i in 0..COUNT {
+                s.send(i).await.unwrap();
+            }
+        });
+
+        let mut buf = Vec::new();
+        while buf.len() < COUNT {
+            assert!(r.drain_into_blocking(&mut buf).await.unwrap() >= 1);
+        }
+        for (i, v) in buf.iter().enumerate() {
+            assert_eq!(*v, i);
+        }
+        producer.await.unwrap();
+    }
+
+    // The shared non-blocking drain_into remains available on the async
+    // receiver and never waits.
+    #[tokio::test]
+    async fn drain_into_non_blocking_on_async_receiver() {
+        let (s, r) = new::<usize>(Some(8));
+        let mut buf = Vec::new();
+        // nothing available: returns immediately with zero
+        assert_eq!(r.drain_into(&mut buf).unwrap(), 0);
+        for i in 0..4 {
+            s.send(i).await.unwrap();
+        }
+        assert_eq!(r.drain_into(&mut buf).unwrap(), 4);
+        assert_eq!(buf, vec![0, 1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn drain_into_blocking_terminated_errors() {
+        let (s, r) = new::<usize>(Some(4));
+        s.send(0).await.unwrap();
+        drop(s);
+        let mut buf = Vec::new();
+        // queued data is still drained after the sender is gone
+        assert_eq!(r.drain_into_blocking(&mut buf).await.unwrap(), 1);
+        // now the channel is terminated
+        assert!(r.drain_into_blocking(&mut buf).await.is_err());
+        assert_eq!(buf, vec![0]);
+    }
 }

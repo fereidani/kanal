@@ -505,11 +505,11 @@ macro_rules! shared_recv_impl {
         ///
         /// When using this function, it’s a good idea to check if the returned
         /// count is zero to avoid busy-waiting in a loop. If blocking behavior
-        /// is desired when the count is zero, you can use the `recv()` function
-        /// if count is zero. For efficiency, reusing the same vector across
-        /// multiple calls can help minimize memory allocations. Between uses,
-        /// you can clear the vector with `vec.clear()` to prepare it for the
-        /// next set of messages.
+        /// is desired when the count is zero, you can use
+        /// [`Self::drain_into_blocking`]. For efficiency, reusing the same
+        /// vector across multiple calls can help minimize memory allocations.
+        /// Between uses, you can clear the vector with `vec.clear()` to
+        /// prepare it for the next set of messages.
         ///
         /// # Examples
         ///
@@ -1302,6 +1302,109 @@ impl<T> Receiver<T> {
         // if the queue is not empty send the data
     }
 
+    /// Drains available messages from the channel into the provided
+    /// vector, blocking the calling thread until at least one message is
+    /// available, and returns the number of received messages.
+    ///
+    /// This is the blocking counterpart of [`Self::drain_into`]: when
+    /// messages are already available it drains them all in a single
+    /// batch without waiting, otherwise it waits for the first message
+    /// like `recv()` and then also picks up whatever else arrived in the
+    /// meantime, so the returned count is always at least 1.
+    ///
+    /// It returns an error if the channel is closed, or if it becomes
+    /// terminated while nothing is available (all senders are dropped and
+    /// the queue is empty). For efficiency, reusing the same vector
+    /// across multiple calls can help minimize memory allocations.
+    ///
+    /// # Blocking
+    ///
+    /// This call blocks the calling thread; in async contexts use
+    /// `AsyncReceiver::drain_into_blocking` (with the `async` feature),
+    /// which returns a future instead of blocking the thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::thread::spawn;
+    /// let (s, r) = kanal::bounded(16);
+    /// let t = spawn(move || {
+    ///     for i in 0..1000 {
+    ///         s.send(i).unwrap();
+    ///     }
+    /// });
+    /// let mut buf = Vec::new();
+    /// while buf.len() < 1000 {
+    ///     // waits for at least one message, then drains every message
+    ///     // that is already available
+    ///     r.drain_into_blocking(&mut buf).unwrap();
+    /// }
+    /// assert_eq!(buf, (0..1000).collect::<Vec<_>>());
+    /// # t.join().unwrap();
+    /// ```
+    pub fn drain_into_blocking(
+        &self,
+        vec: &mut Vec<T>,
+    ) -> Result<usize, ReceiveError> {
+        let mut internal = acquire_internal(&self.internal);
+        if unlikely(internal.recv_count == 0) {
+            return Err(ReceiveError());
+        }
+        // Take the waiting senders and complete them after releasing
+        // the lock, so unpark/wake side effects never run inside the
+        // critical section.
+        let senders = internal.take_sends();
+        let available = internal.queue.len() + senders.len();
+        if available > 0 {
+            vec.reserve(available);
+            vec.extend(internal.queue.drain(..));
+            drop(internal);
+            for p in senders {
+                // SAFETY: it's safe to receive from owned signal once
+                unsafe { vec.push(p.recv()) }
+            }
+            return Ok(available);
+        }
+        if unlikely(internal.send_count == 0) {
+            return Err(ReceiveError());
+        }
+        // Nothing is available, wait for the first message like `recv`.
+        // take_sends observed an empty waitlist and flipped it to the
+        // receive side, so pushing a receive signal here upholds the
+        // waitlist invariant.
+        let mut ret = MaybeUninit::<T>::uninit();
+        let sig = pin!(SyncSignal::new(KanalPtr::new_write_address_ptr(
+            ret.as_mut_ptr()
+        )));
+        internal.push_signal(sig.dynamic_ptr());
+        drop(internal);
+        if unlikely(!sig.wait()) {
+            return Err(ReceiveError());
+        }
+        // SAFETY: it's safe to assume init as data is forgotten on
+        // another side
+        vec.push(if size_of::<T>() > size_of::<*mut T>() {
+            unsafe { ret.assume_init() }
+        } else {
+            unsafe { sig.assume_init() }
+        });
+        // Batch whatever arrived while this thread was waking up. The
+        // closed checks are deliberately skipped as one message is
+        // already owned; if the channel closed meanwhile, the detached
+        // queue and waitlist simply yield nothing extra here.
+        let mut internal = acquire_internal(&self.internal);
+        let senders = internal.take_sends();
+        let extra = internal.queue.len() + senders.len();
+        vec.reserve(extra);
+        vec.extend(internal.queue.drain(..));
+        drop(internal);
+        for p in senders {
+            // SAFETY: it's safe to receive from owned signal once
+            unsafe { vec.push(p.recv()) }
+        }
+        Ok(1 + extra)
+    }
+
     shared_recv_impl!();
     #[cfg(feature = "async")]
     /// Clones receiver as the async version of it
@@ -1458,6 +1561,52 @@ impl<T> AsyncReceiver<T> {
     #[inline(always)]
     pub fn stream(&'_ self) -> ReceiveStream<'_, T> {
         ReceiveStream::new_borrowed(self)
+    }
+    /// Returns a [`DrainIntoFuture`] to drain available messages from the
+    /// channel into the provided vector, waiting asynchronously until at
+    /// least one message is available, and resolving to the number of
+    /// received messages.
+    ///
+    /// This is the waiting counterpart of [`Self::drain_into`], it never
+    /// blocks the thread; awaiting it suspends the task instead. If
+    /// messages are already available, the future resolves immediately on
+    /// the first poll with all of them drained in a single batch.
+    /// Otherwise it waits like `recv` and resolves as soon as the first
+    /// message is delivered, together with any other messages that arrived
+    /// in the meantime, so the resolved count is always at least 1. It
+    /// resolves to an error if the channel is closed, or if it becomes
+    /// terminated while nothing is available.
+    ///
+    /// If the future is dropped after a sender already committed a message
+    /// to it, that message is preserved by being pushed into the vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio::{spawn as co};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let (s, r) = kanal::bounded_async(16);
+    /// co(async move {
+    ///     for i in 0..100 {
+    ///         s.send(i).await.unwrap();
+    ///     }
+    /// });
+    /// let mut buf = Vec::new();
+    /// while buf.len() < 100 {
+    ///     // waits until at least one message is available, then drains
+    ///     // every message that is already available
+    ///     r.drain_into_blocking(&mut buf).await?;
+    /// }
+    /// assert_eq!(buf, (0..100).collect::<Vec<i32>>());
+    /// # anyhow::Ok(())
+    /// # });
+    /// ```
+    #[inline(always)]
+    pub fn drain_into_blocking<'a, 'b>(
+        &'a self,
+        vec: &'b mut Vec<T>,
+    ) -> DrainIntoFuture<'a, 'b, T> {
+        DrainIntoFuture::new_ref(&self.internal, vec)
     }
     shared_recv_impl!();
     /// Returns sync cloned version of the receiver.
