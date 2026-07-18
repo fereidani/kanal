@@ -613,7 +613,16 @@ mod asyncs {
             values: Vec<u64>,
         }
 
+        // Miri's isolated clock advances with executed work rather than real
+        // time, so the native item count can never finish inside any
+        // real-time timeout there (observed: ~750 items burn the whole 30s
+        // budget while progressing normally). A reduced count still
+        // exercises the same handoff interleavings under Miri's scheduler
+        // and still catches the protocol UB this test guards against.
+        #[cfg(not(miri))]
         const N: u64 = 10_000;
+        #[cfg(miri)]
+        const N: u64 = 128;
 
         let (async_sender, receiver) = bounded_async::<Payload>(0);
         // Drive the producer from a synchronous sender on a dedicated thread,
@@ -634,8 +643,10 @@ mod asyncs {
 
         // A regression either ends the stream early (fewer than N items) or
         // deadlocks the rendezvous; the timeout makes both fail fast instead of
-        // hanging the test runner.
-        let count = tokio::time::timeout(Duration::from_secs(30), async {
+        // hanging the test runner. Under Miri the budget is virtual time, so a
+        // generous value costs nothing on a passing run.
+        let timeout = Duration::from_secs(if cfg!(miri) { 600 } else { 30 });
+        let count = tokio::time::timeout(timeout, async {
             receiver
                 .stream()
                 .map(|payload| async move {
