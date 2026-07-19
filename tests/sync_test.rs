@@ -1,3 +1,7 @@
+// Not compiled under loom: these tests use real threads, real time and
+// tokio; the loom models live in tests/loom.rs.
+#![cfg(not(loom))]
+
 mod utils;
 use std::{
     sync::{
