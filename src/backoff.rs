@@ -5,15 +5,24 @@
 /// The main idea behind separating backoff into an independent module is
 /// that it makes it easier to test and compare different backoff
 /// solutions.
+///
+/// Under loom (`--cfg loom`) every strategy collapses into a plain yield
+/// loop: loom neither models time nor benefits from spinning, and the
+/// global statics used for randomization/parallelism detection must not
+/// take part in the modeled executions.
+#[cfg(not(loom))]
 use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
     time::Duration,
 };
+#[cfg(not(loom))]
 use std::thread;
 
+#[cfg(not(loom))]
 use branches::{likely, unlikely};
 
+#[cfg(not(loom))]
 /// Puts the current thread to sleep for a specified duration.
 #[inline(always)]
 pub fn sleep(dur: Duration) {
@@ -22,6 +31,7 @@ pub fn sleep(dur: Duration) {
 
 /// Emits a CPU instruction that signals the processor that it is in a spin
 /// loop.
+#[cfg(not(loom))]
 #[allow(dead_code)]
 #[inline(always)]
 pub fn spin_hint() {
@@ -29,6 +39,7 @@ pub fn spin_hint() {
 }
 
 /// Yields the thread to the scheduler.
+#[cfg(not(loom))]
 #[allow(dead_code)]
 #[inline(always)]
 pub fn yield_os() {
@@ -39,6 +50,7 @@ pub fn yield_os() {
 }
 
 /// Spins in a loop for a finite amount of time.
+#[cfg(not(loom))]
 #[allow(dead_code)]
 #[inline(always)]
 pub fn spin_wait(count: usize) {
@@ -50,6 +62,7 @@ pub fn spin_wait(count: usize) {
 /// Yields the thread to the scheduler for a short random duration.
 /// This function is implemented using a simple 7-bit pseudo random number
 /// generator based on an atomic fetch-and-add operation.
+#[cfg(not(loom))]
 #[allow(dead_code)]
 #[inline(always)]
 pub fn spin_rand() {
@@ -63,6 +76,7 @@ pub fn spin_rand() {
 /// operation and a linear congruential generator (LCG)-like algorithm.
 /// This generator is only suited for the special use-case of yield_now(), and
 /// not recommended for use anywhere else.
+#[cfg(not(loom))]
 #[allow(dead_code)]
 #[inline(always)]
 fn random_u7() -> u8 {
@@ -80,6 +94,7 @@ fn random_u7() -> u8 {
 /// stores it in the PARALLELISM atomic variable. The degree of parallelism
 /// typically corresponds to the number of processor cores that can execute
 /// threads concurrently.
+#[cfg(not(loom))]
 #[inline(always)]
 pub fn get_parallelism() -> usize {
     static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
@@ -115,6 +130,7 @@ pub fn get_parallelism() -> usize {
 ///
 /// The function takes a closure that returns a boolean value indicating whether
 /// the condition has been met. The function returns when the condition is true.
+#[cfg(not(loom))]
 #[allow(dead_code)]
 #[inline(always)]
 pub fn spin_cond<F: Fn() -> bool>(cond: F) {
@@ -176,5 +192,15 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
         }
         // Backoff about 1ms
         sleep(Duration::from_nanos(1 << 20));
+    }
+}
+
+/// Loom variant of `spin_cond`: a plain yield loop. Each yield is a loom
+/// scheduling point, letting the model explore the interleavings without
+/// the timed/randomized phases of the real backoff.
+#[cfg(loom)]
+pub fn spin_cond<F: Fn() -> bool>(cond: F) {
+    while !cond() {
+        crate::primitives::yield_now();
     }
 }

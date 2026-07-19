@@ -686,7 +686,10 @@ impl<T> Future for DrainIntoFuture<'_, '_, T> {
 pub struct SendManyFuture<'a, 'b, T> {
     internal: &'a Internal<T>,
     // This is a UnsafeCell, because it can be shared in WaitQueue of the
-    // channel
+    // channel. Deliberately core's UnsafeCell rather than the loom-aware
+    // facade: it is only ever accessed through `&mut self` by the owning
+    // task, while the cross-thread traffic happens on the inner
+    // AsyncSignal, which is loom-instrumented.
     fut: UnsafeCell<SendFuture<'a, T>>,
     // Elements that we are writing to the channel
     elements: &'b mut std::collections::VecDeque<T>,

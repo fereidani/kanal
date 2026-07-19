@@ -1,14 +1,19 @@
-#[cfg(not(feature = "std-mutex"))]
+#[cfg(all(not(feature = "std-mutex"), not(loom)))]
 use crate::mutex::{Mutex, MutexGuard};
 use crate::signal::DynamicSignal;
 extern crate alloc;
 use alloc::collections::VecDeque;
 use core::fmt::Debug;
-#[cfg(feature = "std-mutex")]
+#[cfg(all(feature = "std-mutex", not(loom)))]
 use std::sync::{Mutex, MutexGuard};
 
 use branches::unlikely;
 use cacheguard::CacheGuard;
+// Loom's model-checked mutex replaces both mutex flavors under `--cfg
+// loom`; the kanal RawMutexLock itself is model-checked separately in
+// src/mutex.rs.
+#[cfg(loom)]
+use loom::sync::{Mutex, MutexGuard};
 
 pub(crate) struct Internal<T> {
     // The cache guard to keep internal pointer in cache, it works with both
@@ -136,9 +141,9 @@ impl<T> core::ops::Deref for Internal<T> {
 pub(crate) fn acquire_internal<T>(
     internal: &'_ Internal<T>,
 ) -> MutexGuard<'_, ChannelInternal<T>> {
-    #[cfg(not(feature = "std-mutex"))]
+    #[cfg(all(not(feature = "std-mutex"), not(loom)))]
     return internal.lock();
-    #[cfg(feature = "std-mutex")]
+    #[cfg(any(feature = "std-mutex", loom))]
     internal.lock().unwrap_or_else(|err| err.into_inner())
 }
 
@@ -148,9 +153,9 @@ pub(crate) fn acquire_internal<T>(
 pub(crate) fn try_acquire_internal<T>(
     internal: &'_ Internal<T>,
 ) -> Option<MutexGuard<'_, ChannelInternal<T>>> {
-    #[cfg(not(feature = "std-mutex"))]
+    #[cfg(all(not(feature = "std-mutex"), not(loom)))]
     return internal.try_lock();
-    #[cfg(feature = "std-mutex")]
+    #[cfg(any(feature = "std-mutex", loom))]
     internal.try_lock().ok()
 }
 

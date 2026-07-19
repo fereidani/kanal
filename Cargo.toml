@@ -24,6 +24,14 @@ crossbeam = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "test-util", "macros"] }
 futures = "0.3"
 
+# Model checker for concurrent code, active only with RUSTFLAGS="--cfg loom".
+# See tests/loom.rs for how to run the loom test suite.
+[target.'cfg(loom)'.dependencies]
+loom = { version = "0.7", features = ["futures"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+
 [features]
 async = ["futures-core"]
 std-mutex = []

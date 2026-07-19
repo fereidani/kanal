@@ -3,9 +3,13 @@
 
 pub(crate) mod backoff;
 pub(crate) mod internal;
-#[cfg(not(feature = "std-mutex"))]
+// The custom mutex is compiled under loom regardless of the std-mutex
+// feature so its loom model tests always run; the channel itself uses
+// loom's own mutex in that configuration (see internal.rs).
+#[cfg(any(not(feature = "std-mutex"), loom))]
 pub(crate) mod mutex;
 pub(crate) mod pointer;
+pub(crate) mod primitives;
 
 mod error;
 #[cfg(feature = "async")]

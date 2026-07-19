@@ -1,8 +1,9 @@
 use core::{
-    cell::UnsafeCell,
     mem::{forget, size_of, zeroed, MaybeUninit},
     ptr,
 };
+
+use crate::primitives::UnsafeCell;
 
 /// Kanal Pointer is a structure to move data efficiently between sync and async
 /// context. This mod transfer data with two different ways between threads:
@@ -27,7 +28,7 @@ impl<T> KanalPtr<T> {
     /// ownership Creator side should take care of forgetting the object
     /// after move action is completed.
     #[inline(always)]
-    pub(crate) const fn new_from(addr: *mut T) -> Self {
+    pub(crate) fn new_from(addr: *mut T) -> Self {
         if size_of::<T>() > size_of::<*mut T>() {
             Self(UnsafeCell::new(MaybeUninit::new(addr)))
         } else {
@@ -37,7 +38,7 @@ impl<T> KanalPtr<T> {
     /// Creates a KanalPtr only for write operation, so it does not load data
     /// inside addr in KanalPtr as it is unnecessary
     #[inline(always)]
-    pub(crate) const fn new_write_address_ptr(addr: *mut T) -> Self {
+    pub(crate) fn new_write_address_ptr(addr: *mut T) -> Self {
         if size_of::<T>() > size_of::<*mut T>() {
             Self(UnsafeCell::new(MaybeUninit::new(addr)))
         } else {
@@ -46,23 +47,26 @@ impl<T> KanalPtr<T> {
     }
     /// Reads data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
-    pub(crate) const unsafe fn read(&self) -> T {
+    pub(crate) unsafe fn read(&self) -> T {
         if size_of::<T>() == 0 {
             zeroed()
         } else if size_of::<T>() > size_of::<*mut T>() {
-            ptr::read((*self.0.get()).assume_init())
+            self.0
+                .with(|cell| unsafe { ptr::read((*cell).assume_init()) })
         } else {
-            ptr::read((*self.0.get()).as_ptr() as *const T)
+            self.0.with(|cell| unsafe { ptr::read(cell as *const T) })
         }
     }
     /// Writes data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
-    pub(crate) const unsafe fn write(&self, d: T) {
+    pub(crate) unsafe fn write(&self, d: T) {
         if size_of::<T>() > size_of::<*mut T>() {
-            ptr::write((*self.0.get()).assume_init(), d);
+            self.0
+                .with(|cell| unsafe { ptr::write((*cell).assume_init(), d) });
         } else {
             if size_of::<T>() > 0 {
-                *self.0.get() = store_as_kanal_ptr(&d);
+                self.0
+                    .with_mut(|cell| unsafe { *cell = store_as_kanal_ptr(&d) });
             }
             forget(d);
         }
@@ -70,15 +74,18 @@ impl<T> KanalPtr<T> {
     /// Writes data based on movement protocol of KanalPtr based on size of T
     #[inline(always)]
     #[allow(unused)]
-    pub(crate) const unsafe fn copy(&self, d: *const T) {
+    pub(crate) unsafe fn copy(&self, d: *const T) {
         if size_of::<T>() > size_of::<*mut T>() {
             // Data can't be stored as pointer value, move it to pointer
             // location
-            ptr::copy_nonoverlapping(d, (*self.0.get()).assume_init(), 1);
+            self.0.with(|cell| unsafe {
+                ptr::copy_nonoverlapping(d, (*cell).assume_init(), 1)
+            });
         } else if size_of::<T>() > 0 {
             // Data size is less or equal to pointer size, serialize data as
             // pointer address
-            *self.0.get() = store_as_kanal_ptr(d);
+            self.0
+                .with_mut(|cell| unsafe { *cell = store_as_kanal_ptr(d) });
         }
     }
 }
